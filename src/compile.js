@@ -83,12 +83,17 @@ function mergeByName(entities) {
  * keeps its entry across runs. New entities get uids from `nextUid` up, in
  * story order; a retired uid is never handed out again.
  *
- * Returns { entries, ledger, review, contested, nextUid }. `ledger` has one
- * record per entity, shipped or not: the entity as the model gave it (the
- * canon a later run starts from) plus `uid` and `compiled`, every key
- * decision with its reason.
+ * `deleted` are uids of entries a human deleted from the book. Their
+ * entities stay in the canon but get no entry, and their keys are free: a
+ * run never brings back what someone removed (the audit can, if asked).
+ *
+ * Returns { entries, ledger, review, contested, nextUid, deleted }. `ledger`
+ * has one record per entity, shipped or not: the entity as the model gave it
+ * (the canon a later run starts from) plus `uid` and `compiled`, every key
+ * decision with its reason. `deleted` maps each deleted uid still in the
+ * canon to its entity's name.
  */
-export function compile(entities, messages, { pinned = [], uids = new Map(), nextUid = 0 } = {}) {
+export function compile(entities, messages, { pinned = [], uids = new Map(), nextUid = 0, deleted = new Set() } = {}) {
     const review = [];
     const maxFires = Math.floor(messages.length * MAX_FIRE_FRACTION);
 
@@ -100,8 +105,14 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
     for (const [name, uid] of uids) if (keptUids.has(uid) && !pinnedUid.has(name)) pinnedUid.set(name, uid);
     const merged = mergeByName(entities);
     const held = [];
+    const gone = [];
     const candidates = merged
         .filter((e) => {
+            if (deleted.has(uids.get(fold(e.name)))) {
+                gone.push(e);
+                review.push({ name: e.name, reason: 'its entry was deleted from the book; left out' });
+                return false;
+            }
             if (!pinnedUid.has(fold(e.name))) return true;
             held.push(e);
             review.push({ name: e.name, reason: 'a pinned or hand-edited entry covers this name; kept that entry' });
@@ -214,10 +225,11 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
     const ledger = [
         ...shipped.map((c) => record(c.name, c.uid, { keys: c.keys, caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: c.anchor })),
         ...held.map((e) => record(e.name, pinnedUid.get(fold(e.name)), null)),
+        ...gone.map((e) => record(e.name, uids.get(fold(e.name)), null)),
         ...unshipped.map((c) => record(c.name, null, { keys: [], caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: null })),
     ];
     const maxUid = Math.max(nextUid - 1, ...[...taken].filter(Number.isInteger));
-    return { entries, ledger, review, contested, nextUid: maxUid + 1 };
+    return { entries, ledger, review, contested, nextUid: maxUid + 1, deleted: Object.fromEntries(gone.map((e) => [String(uids.get(fold(e.name))), e.name])) };
 }
 
 /** The full SillyTavern entry. The model never writes any of these fields. */

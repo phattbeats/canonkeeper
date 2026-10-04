@@ -5,6 +5,9 @@
 //   canonkeeper pin   <dir> <entry title>          mark an entry as human-pinned in <dir>/book.json
 //   canonkeeper rerun <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
 //   canonkeeper update <transcript.jsonl> --run <dir> [--out <dir>] [--model <id> | --replay <replies.json>] [--context <tokens>] [--dry-run]
+//   canonkeeper audit <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--no-verify]
+//   canonkeeper accept <transcript.jsonl> --run <dir> <finding id>
+//   canonkeeper dismiss <dir> <finding id>
 //
 // build writes book.json, scenes.json, ledger.json and replies.json (the raw
 // model replies, replayable with --replay). rerun starts from <dir>/book.json
@@ -14,6 +17,13 @@
 // changed, and saves the model's replies to update-replies.json. --out writes
 // those to another directory and leaves the run as it was. --dry-run prints
 // the plan and writes nothing.
+//
+// audit reads <dir>/book.json and <dir>/ledger.json, writes nothing to them,
+// and writes <dir>/audit.json (the findings, the claims' verdicts and the
+// review queue) and audit-replies.json. --no-verify runs only the technical
+// pass, keeping verdicts from an earlier audit.json. accept applies one
+// finding's fix to book.json (and ledger.json), then audits again with no
+// model call; dismiss marks a finding dismissed.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,6 +32,7 @@ import { parseTranscript } from '../src/transcript.js';
 import { build } from '../src/build.js';
 import { update } from '../src/update.js';
 import { describe } from '../src/plan.js';
+import { audit, accept, dismiss, describeFinding, openFindings } from '../src/audit.js';
 import { claudeCli } from '../src/models/claude-cli.js';
 import { replay, recording } from '../src/models/replay.js';
 
@@ -41,6 +52,7 @@ function parseArgs(argv) {
         else if (a === '--context') args.context = Number(argv[++i]);
         else if (a === '--output-share') args.outputShare = Number(argv[++i]);
         else if (a === '--dry-run') args.dryRun = true;
+        else if (a === '--no-verify') args.noVerify = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
     }
@@ -130,7 +142,60 @@ async function main() {
         return;
     }
 
-    throw new Error('usage: canonkeeper build|pin|rerun|update ... (see the header of bin/canonkeeper.js)');
+    if (cmd === 'audit') {
+        const [transcript] = args._;
+        if (!transcript || !args.dir) throw new Error('usage: canonkeeper audit <transcript.jsonl> --run <dir>');
+        const messages = parseTranscript(readFileSync(transcript, 'utf8'));
+        const previous = existsSync(join(args.dir, 'audit.json')) ? readJson(join(args.dir, 'audit.json')) : null;
+        const replies = [];
+        const record = await audit({
+            book: readJson(join(args.dir, 'book.json')),
+            ledger: existsSync(join(args.dir, 'ledger.json')) ? readJson(join(args.dir, 'ledger.json')) : null,
+            messages,
+            generate: args.noVerify ? null : recording(model(args), replies),
+            contextTokens: args.context,
+            previous,
+        });
+        if (replies.length) writeJson(join(args.dir, 'audit-replies.json'), replies);
+        writeJson(join(args.dir, 'audit.json'), record);
+        printAudit(record);
+        return;
+    }
+
+    if (cmd === 'accept') {
+        const [transcript, id] = args._;
+        if (!transcript || !args.dir || !id) throw new Error('usage: canonkeeper accept <transcript.jsonl> --run <dir> <finding id>');
+        const messages = parseTranscript(readFileSync(transcript, 'utf8'));
+        const ledgerPath = join(args.dir, 'ledger.json');
+        const record = readJson(join(args.dir, 'audit.json'));
+        const out = await accept({ book: readJson(join(args.dir, 'book.json')), ledger: existsSync(ledgerPath) ? readJson(ledgerPath) : null, messages, record, id });
+        for (const line of out.writes) console.log(`  ${line}`);
+        writeJson(join(args.dir, 'book.json'), out.book);
+        if (out.ledger) writeJson(ledgerPath, out.ledger);
+        // The fix changed the book: the technical pass runs again, and the
+        // claims' verdicts carry over.
+        const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: record });
+        writeJson(join(args.dir, 'audit.json'), next);
+        printAudit(next);
+        return;
+    }
+
+    if (cmd === 'dismiss') {
+        const [dir, id] = args._;
+        if (!dir || !id) throw new Error('usage: canonkeeper dismiss <dir> <finding id>');
+        writeJson(join(dir, 'audit.json'), dismiss(readJson(join(dir, 'audit.json')), id));
+        console.log(`dismissed ${id}`);
+        return;
+    }
+
+    throw new Error('usage: canonkeeper build|pin|rerun|update|audit|accept|dismiss ... (see the header of bin/canonkeeper.js)');
+}
+
+function printAudit(record) {
+    const open = openFindings(record);
+    const c = record.claims;
+    console.log(`audit: ${open.length} open finding(s) (${open.filter((f) => f.severity === 'error').length} errors); claims ${c.checked} of ${c.total} verified, ${c.stale} stale, ${c.unchecked} unchecked; ${record.calls} model call(s)`);
+    for (const f of record.findings) console.log(`  ${f.id}\n    ${describeFinding(f)}`);
 }
 
 main().catch((err) => {

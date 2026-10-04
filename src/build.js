@@ -39,7 +39,8 @@ export function toBook(entries) {
  * The ledger: the per-chat state a later run starts from. The lorebook is
  * output; this is the record. `revision` counts the runs that wrote.
  * `chunked`, set when the book was built in parts (chunked.js), says so for
- * as long as the ledger lives.
+ * as long as the ledger lives. `deleted`, when there is any, lists the
+ * entries a human deleted, which later runs leave out (compile).
  */
 export function makeLedger({ messages, budget, scenes, compiled, review, revision, held = [], previous = {}, chunked }) {
     const heldUids = new Set(held.map((e) => String(e.uid)));
@@ -62,6 +63,7 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
         written,
         contested: compiled.contested,
         review,
+        ...(Object.keys(compiled.deleted ?? {}).length ? { deleted: compiled.deleted } : {}),
         ...(chunked ? { chunked } : {}),
     };
 }

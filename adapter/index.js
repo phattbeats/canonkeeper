@@ -3,7 +3,7 @@
 // SillyTavern.getContext() API, so it doesn't depend on where the extension
 // is installed. The run itself is run.js; this file only wires it up.
 
-import { runCanon, runLive, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
+import { runCanon, runLive, runAudit, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
 const ctx = () => SillyTavern.getContext();
@@ -98,6 +98,58 @@ async function canon() {
     }
 }
 
+// --- The audit ------------------------------------------------------------------
+
+/** Runs the audit on the open chat. Writes nothing to the book; fixes wait in the status view. */
+async function canonAudit() {
+    const c = ctx();
+    const s = settings();
+    const profile = profileOf(s.auditProfileId) ?? profileOf(s.detectProfileId) ?? profileOf(s.profileId);
+    const verify = !!s.auditVerify;
+    const refuse = running ? 'Canonkeeper is already running'
+        : !c.chatId ? 'Open a chat first'
+            : verify && !profile ? 'Pick a connection profile in Extensions → Canonkeeper first, or untick claim verification' : null;
+    if (refuse) {
+        toastr.warning(refuse, 'Canonkeeper');
+        throw new Error(refuse);
+    }
+    running = true;
+    renderStatus('running');
+    const toast = toastr.info(verify ? 'Auditing the lorebook and checking its claims…' : 'Auditing the lorebook…', 'Canonkeeper', { timeOut: 0, extendedTimeOut: 0 });
+    try {
+        const st = profile ? stFor(c, s, profile) : { ...stFor(c, s, { id: '', name: '' }), generate: null };
+        const { summary } = await runAudit(st, { verify });
+        toastr.success(summary, 'Canonkeeper');
+        return summary;
+    } catch (err) {
+        toastr.error(err.message, 'Canonkeeper', { timeOut: 15000 });
+        throw err;
+    } finally {
+        toastr.clear(toast);
+        running = false;
+        renderStatus();
+    }
+}
+
+/** Accept or dismiss one finding of the review queue. */
+async function onFinding(action, id) {
+    const c = ctx();
+    if (running) return toastr.warning('Wait for the run to finish', 'Canonkeeper');
+    running = true;
+    try {
+        const st = { ...stFor(c, settings(), { id: '', name: '' }), generate: null };
+        if (action === 'accept') {
+            const { writes } = await acceptFinding(st, id);
+            toastr.success(writes.length ? writes.join('\n') : 'No change was needed', 'Canonkeeper: fix accepted');
+        } else await dismissFinding(st, id);
+    } catch (err) {
+        toastr.error(err.message, 'Canonkeeper', { timeOut: 15000 });
+    } finally {
+        running = false;
+        renderStatus();
+    }
+}
+
 // --- Live mode ----------------------------------------------------------------
 
 /**
@@ -153,7 +205,14 @@ const html = `
       </div>
       <div class="canonkeeper-row">
         <div id="canonkeeper_run" class="menu_button">Run /canon</div>
+        <div id="canonkeeper_audit" class="menu_button">Audit</div>
       </div>
+      <label class="checkbox_label" for="canonkeeper_audit_verify">
+        <input id="canonkeeper_audit_verify" type="checkbox">
+        <span>Audit also checks every claim against the messages it cites (one model call per batch)</span>
+      </label>
+      <label for="canonkeeper_audit_profile">Claim check profile (a cheap model does well)</label>
+      <select id="canonkeeper_audit_profile" class="text_pole"></select>
       <hr>
       <label class="checkbox_label" for="canonkeeper_live">
         <input id="canonkeeper_live" type="checkbox">
@@ -203,8 +262,11 @@ async function renderStatus(phase) {
     }
     if (settings().live || state?.live) parts.push(liveStatus(state?.live));
     const bookName = state?.book;
-    if (bookName && bookName === c.chatMetadata.world_info) {
-        const book = await c.loadWorldInfo(bookName);
+    const bound = c.chatMetadata.world_info;
+    const boundBook = bound ? await c.loadWorldInfo(bound) : null;
+    if (state?.audit) parts.push(auditStatus(state.audit, state.audit.book === bound && auditIsCurrent(state.audit, boundBook, c.chat)));
+    if (bookName && bookName === bound) {
+        const book = boundBook;
         const entries = Object.values(book?.entries ?? {}).filter((e) => e.canonkeeper).sort((a, b) => a.uid - b.uid);
         if (entries.length) {
             const rows = entries.map((e) => `<label class="canonkeeper-entry"><input type="checkbox" data-uid="${esc(e.uid)}" ${e.canonkeeper.pinned ? 'checked' : ''}> ${esc(e.comment)} <small>${esc((e.key ?? []).join(', '))}</small></label>`);
@@ -219,6 +281,34 @@ async function renderStatus(phase) {
         if (open.has(x.textContent.split(' ')[0])) x.parentElement.open = true;
     });
     el.querySelectorAll('input[data-uid]').forEach((box) => box.addEventListener('change', () => setPin(bookName, box.dataset.uid, box.checked)));
+    el.querySelectorAll('[data-finding]').forEach((b) => b.addEventListener('click', () => onFinding(b.dataset.action, b.dataset.finding)));
+}
+
+/**
+ * The review queue: the last audit's open findings, each with its fix to
+ * accept and a dismiss button. Nothing in it is applied until accepted, and
+ * a fix can only be accepted while the audit still matches the book and chat.
+ */
+function auditStatus(a, current) {
+    const head = `<b>Audit</b>${a.at ? ` ${esc(new Date(a.at).toLocaleString())}` : ''}`;
+    if (!a.findings) return `<div>${head}: <span class="canonkeeper-error">failed: ${esc(a.error?.message)}</span></div>`;
+    const open = a.findings.filter((f) => !f.dismissed);
+    const line = (f) => {
+        const buttons = [
+            f.fix && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-finding="${esc(f.id)}" title="${esc(f.fix.says)}">Accept: ${esc(f.fix.says)}</div>` : '',
+            `<div class="menu_button" data-action="dismiss" data-finding="${esc(f.id)}">Dismiss</div>`,
+        ].join('');
+        return `<div class="canonkeeper-finding canonkeeper-${f.severity}" data-id="${esc(f.id)}"><span>${f.severity === 'error' ? '✖' : '⚠'} ${esc(f.check)}: ${esc(f.message)}</span>${f.held ? ` <small>(held: ${esc(f.held)})</small>` : ''}<div class="canonkeeper-row">${buttons}</div></div>`;
+    };
+    const parts = [`<div>${head}: ${esc(a.summary ?? '')}</div>`];
+    if (a.error) parts.push(`<div class="canonkeeper-error">Last audit failed: ${esc(a.error.message)}</div>`);
+    if (!current && open.some((f) => f.fix)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
+    if (open.length) parts.push(`<details open><summary>Review queue (${open.length})</summary>${open.map(line).join('')}</details>`);
+    const dismissed = a.findings.filter((f) => f.dismissed);
+    if (dismissed.length) parts.push(`<details><summary>Dismissed (${dismissed.length})</summary><pre>${esc(dismissed.map((f) => `${f.check}: ${f.message}`).join('\n'))}</pre></details>`);
+    if (a.accepted?.length) parts.push(`<details><summary>Accepted (${a.accepted.length})</summary><pre>${esc(a.accepted.map((x) => `${new Date(x.at).toLocaleString()} ${x.says}: ${x.writes.join('; ') || 'no writes'}`).join('\n'))}</pre></details>`);
+    if (a.log?.length) parts.push(`<details><summary>Audit log</summary><pre>${esc(a.log.join('\n'))}</pre></details>`);
+    return parts.join('');
 }
 
 /** The live state store, for the status view: counts, scene starts, recent cycles. */
@@ -265,6 +355,7 @@ async function setPin(bookName, uid, pinned) {
 function renderProfiles() {
     renderProfileSelect('canonkeeper_profile', 'profileId', 'Pick a connection profile');
     renderProfileSelect('canonkeeper_detect_profile', 'detectProfileId', 'Same as the profile above');
+    renderProfileSelect('canonkeeper_audit_profile', 'auditProfileId', 'Same as scene detection');
 }
 
 function renderProfileSelect(id, setting, none) {
@@ -307,6 +398,10 @@ function mountSettings() {
         s.detectProfileId = String(this.value);
         c.saveSettingsDebounced();
     });
+    $('#canonkeeper_audit_profile').on('change', function () {
+        s.auditProfileId = String(this.value);
+        c.saveSettingsDebounced();
+    });
     $('#canonkeeper_live').prop('checked', !!s.live).on('change', function () {
         s.live = !!this.checked;
         c.saveSettingsDebounced();
@@ -328,6 +423,11 @@ function mountSettings() {
         if (c.eventTypes[event]) c.eventSource.on(c.eventTypes[event], () => setTimeout(renderProfiles));
     }
     $('#canonkeeper_run').on('click', () => canon().catch(() => {}));
+    $('#canonkeeper_audit').on('click', () => canonAudit().catch(() => {}));
+    $('#canonkeeper_audit_verify').prop('checked', !!s.auditVerify).on('change', function () {
+        s.auditVerify = !!this.checked;
+        c.saveSettingsDebounced();
+    });
     renderStatus();
 }
 
@@ -338,6 +438,12 @@ function registerCommand() {
         callback: async () => canon(),
         returns: 'a one-line summary of the run',
         helpString: 'Canonkeeper: brings this chat\'s lorebook up to date with the story. The first run builds it; later runs re-read only what changed. Pinned and hand-edited entries are never touched.',
+    }));
+    c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
+        name: 'canon-audit',
+        callback: async () => canonAudit(),
+        returns: 'a one-line summary of the audit',
+        helpString: 'Canonkeeper: audits this chat\'s lorebook. Finds keys claimed by two entries, entries with no keys, keys that fire on nearly everything, settings that stop an entry firing, and deleted entries; optionally checks every claim against the messages it cites. Writes nothing: fixes wait in Extensions → Canonkeeper for you to accept.',
     }));
 }
 

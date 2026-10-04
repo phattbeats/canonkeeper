@@ -21,6 +21,8 @@ import {
     checkI6PinsSurvive,
     scoreC7Coverage,
     scoreC8Boundaries,
+    checkA12AuditCatches,
+    checkA13AuditQuiet,
 } from '../harness/checks.js';
 import { runGate } from '../harness/gate.js';
 
@@ -270,4 +272,61 @@ test('a run directory with a missing file is a fixture error, not a pass', () =>
 
 test('a missing story directory is a fixture error, not a pass', () => {
     assert.throws(() => runGate({ storyDir: join(STORY, 'nope'), runDir: join(STORY, 'reference') }), FixtureError);
+});
+
+// ── A12 / A13: the audit gate can fail ──────────────────────────────────────
+
+/** A minimal audit run: the broken fixture as the planted book, and an audit that saw everything. */
+function auditRun() {
+    const book = loadRun(join(STORY, 'broken-collision')).book;
+    const uids = book.filter((e) => e.keys.includes('Captain')).map((e) => e.uid);
+    const planted = {
+        collision: { key: 'Captain', uids },
+        deleted: { uid: 999, title: 'Gone' },
+        falseFacts: [{ entity: 'Pell', uid: 0, text: 'Pell is a sea serpent.' }],
+    };
+    const audit = {
+        claims: { total: 10, checked: 10, stale: 0, unchecked: 0 },
+        findings: [
+            { id: 'collision:captain', check: 'collision', key: 'Captain', uids },
+            { id: 'deleted:999', check: 'deleted', uids: [999] },
+            { id: 'claim:0:x', check: 'claim', uids: [0], claim: 'Pell is a sea serpent.', verdict: 'contradicted' },
+        ],
+    };
+    return { planted, before: book, book: structuredClone(book), audit, rerun: book };
+}
+
+test('A12 green when the audit caught every plant', () => {
+    assert.equal(checkA12AuditCatches(auditRun()).ok, true);
+});
+
+test('A12 red when the audit missed the collision, the deletion or a false fact', () => {
+    for (const check of ['collision', 'deleted', 'claim']) {
+        const run = auditRun();
+        run.audit.findings = run.audit.findings.filter((f) => f.check !== check);
+        assert.equal(checkA12AuditCatches(run).ok, false, check);
+    }
+    const run = auditRun();
+    run.audit.findings[2].verdict = 'supported';
+    assert.equal(checkA12AuditCatches(run).ok, false);
+});
+
+test('A12 red when a re-run brought the deleted entry back, or the audit wrote to the book', () => {
+    const back = auditRun();
+    back.rerun = [...back.rerun, { uid: 999, title: 'Gone', keys: ['Gone'], raw: {} }];
+    assert.equal(checkA12AuditCatches(back).ok, false);
+    const wrote = auditRun();
+    wrote.book[0] = { ...wrote.book[0], raw: { ...wrote.book[0].raw, key: [] } };
+    assert.equal(checkA12AuditCatches(wrote).ok, false);
+    const none = auditRun();
+    none.audit.claims.checked = 0;
+    assert.equal(checkA12AuditCatches(none).ok, false);
+});
+
+test('A13 red on any technical finding, too many flagged claims, or nothing verified', () => {
+    const quiet = { audit: { claims: { checked: 20 }, findings: [{ check: 'claim' }] } };
+    assert.equal(checkA13AuditQuiet(quiet).ok, true);
+    assert.equal(checkA13AuditQuiet({ audit: { claims: { checked: 20 }, findings: [{ id: 'collision:x', check: 'collision' }] } }).ok, false);
+    assert.equal(checkA13AuditQuiet({ audit: { claims: { checked: 20 }, findings: Array(4).fill({ check: 'claim' }) } }).ok, false);
+    assert.equal(checkA13AuditQuiet({ audit: { claims: { checked: 0 }, findings: [] } }).ok, false);
 });

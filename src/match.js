@@ -6,7 +6,8 @@
 //     substring (whole-word matching is on by default in ST);
 //   - matching is case-insensitive unless the entry is case-sensitive.
 //
-// The core never emits `/regex/` keys, so this module doesn't parse them.
+// The core never emits `/regex/` keys. Only the audit, which reads entries a
+// human wrote too, parses them (entryKeyRegex).
 
 function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -17,6 +18,24 @@ export function keyRegex(key, caseSensitive) {
     const flags = caseSensitive ? 'u' : 'iu';
     if (/\s/.test(key)) return new RegExp(body, flags);
     return new RegExp(`(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`, flags);
+}
+
+/**
+ * A key of any entry in a book, Canonkeeper's or not, as SillyTavern reads
+ * it: `/pattern/flags` is a regex, and a null per-entry setting falls back to
+ * case-insensitive, whole-word matching.
+ */
+export function entryKeyRegex(key, entry) {
+    const re = /^\/(.+)\/([a-z]*)$/.exec(key);
+    if (re) {
+        try {
+            return new RegExp(re[1], re[2].replace('g', ''));
+        } catch {
+            // Not a valid regex: SillyTavern treats it as a plain key.
+        }
+    }
+    if (entry.matchWholeWords === false) return new RegExp(escapeRegex(key), entry.caseSensitive ? 'u' : 'iu');
+    return keyRegex(key, !!entry.caseSensitive);
 }
 
 /** Ids of the messages a key fires on. */

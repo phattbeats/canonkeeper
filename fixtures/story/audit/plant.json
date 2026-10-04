@@ -1,0 +1,9 @@
+{
+  "about": "Damage planted into a book built from recorded/replies.json, for the audit (step 6) to catch. falseFacts are added to the recorded build reply, as if the model had written them. The rest is done to the built book, as a human would in the World Info editor.",
+  "falseFacts": [
+    { "entity": "Kestrel Lighthouse", "text": "Its keeper is a young woman who lets Tamsin in without a word.", "messages": [40], "expect": "contradicted" },
+    { "entity": "Mora Quill", "text": "She was born in Saltgate and served ten years in the city watch.", "messages": [2], "expect": "unsupported" }
+  ],
+  "collision": { "key": "Captain", "entries": ["Mora Quill", "Oren Hale"] },
+  "delete": "The Harbor Fire"
+}

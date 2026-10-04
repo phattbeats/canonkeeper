@@ -11,8 +11,9 @@
 
 import { update } from '../src/update.js';
 import { describe } from '../src/plan.js';
-import { hashOf } from '../src/fingerprint.js';
+import { hashOf, fingerprint } from '../src/fingerprint.js';
 import { seed, rewind, detect, updateTarget, logCycle, isLive, DEFAULT_CADENCE } from '../src/live.js';
+import { audit, accept, dismiss, openFindings } from '../src/audit.js';
 
 export const STATE_KEY = 'canonkeeper';
 export const STATE_VERSION = 1;
@@ -27,6 +28,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     detectProfileId: '',
     cadence: DEFAULT_CADENCE,
     detectContextTokens: 32000,
+    // The audit checks claims unless this is off, with its own profile, else
+    // the detector's, else the writer's. A cheap model does well here too.
+    auditVerify: true,
+    auditProfileId: '',
 });
 
 /** The open chat as the core's messages: the same shape parseTranscript gives. */
@@ -267,4 +272,107 @@ export async function runLive(st) {
     st.metadata[STATE_KEY] = { ...state, ...extra, version: STATE_VERSION, live: logCycle(live, cycle) };
     await st.saveMetadata();
     return cycle;
+}
+
+// --- The audit ------------------------------------------------------------------
+
+function auditSummary(record, bookName) {
+    const open = openFindings(record);
+    const errors = open.filter((f) => f.severity === 'error').length;
+    const fixes = open.filter((f) => f.fix).length;
+    const c = record.claims;
+    const claims = c.total ? ` ${c.checked} of ${c.total} claims verified${c.stale ? `, ${c.stale} stale` : ''}.` : '';
+    return `Canonkeeper audit of '${bookName}': ${open.length ? `${open.length} finding${open.length === 1 ? '' : 's'} (${errors} error${errors === 1 ? '' : 's'}), ${fixes} with a fix to review` : 'nothing found'}.${claims}`;
+}
+
+/**
+ * Audits the chat's lorebook (src/audit.js) and keeps the result, the review
+ * queue, in `chat_metadata.canonkeeper.audit`. Writes nothing to the book.
+ * With `verify`, the writer's model re-checks every claim against the
+ * messages it cites; without, only the technical pass runs and earlier
+ * verdicts carry over. Throws if the chat has no lorebook or is switched.
+ */
+export async function runAudit(st, { verify = true } = {}) {
+    const started = Date.now();
+    const { lines, log } = runLog(st);
+    const state = st.metadata[STATE_KEY] ?? {};
+    const bookName = st.metadata.world_info;
+    const keep = (audit) => {
+        st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, audit: { ...audit, ms: Date.now() - started, profile: verify ? st.profile ?? null : null, log: lines } };
+    };
+    try {
+        if (!bookName) throw new Error('the chat has no lorebook: run /canon first');
+        const messages = toMessages(st.chat);
+        if (!messages.length) throw new Error('the chat has no messages');
+        const book = (await st.loadBook(bookName)) ?? { entries: {} };
+        book.entries ??= {};
+        // The ledger describes the book /canon writes to. A book bound since
+        // then has no history: its deletions can't be known.
+        const ledger = state.book === bookName ? state.ledger ?? null : null;
+        log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
+        const previous = state.audit?.book === bookName ? state.audit : null;
+        const record = await audit({ book, ledger, messages, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous });
+        if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
+        const summary = auditSummary(record, bookName);
+        log(summary);
+        keep({ ...record, book: bookName, summary, accepted: previous?.accepted ?? [] });
+        await st.saveMetadata();
+        return { summary, record };
+    } catch (err) {
+        log(`audit failed: ${err.message}`);
+        if (st.currentChatId() !== st.chatId) throw err;
+        keep({ ...(state.audit ?? {}), error: { at: new Date(started).toISOString(), message: err.message } });
+        await st.saveMetadata();
+        throw err;
+    }
+}
+
+/**
+ * Accepts one finding's fix from the review queue: writes it to the book
+ * (and the ledger), then runs the technical pass again, with no model call,
+ * so the queue matches the book. Refuses, writing nothing, if the chat or
+ * the book changed since the audit.
+ */
+export async function acceptFinding(st, id) {
+    const state = st.metadata[STATE_KEY] ?? {};
+    const record = state.audit;
+    if (!record?.findings) throw new Error('no audit on this chat yet: run /canon-audit');
+    const bookName = record.book;
+    if (bookName !== st.metadata.world_info) throw new Error('the audit was of another lorebook: audit again');
+    const messages = toMessages(st.chat);
+    const book = (await st.loadBook(bookName)) ?? { entries: {} };
+    book.entries ??= {};
+    const ledger = state.book === bookName ? state.ledger ?? null : null;
+    const out = await accept({ book, ledger, messages, record, id });
+    if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched; nothing was written');
+    await st.saveBook(bookName, out.book);
+    st.log?.(`accepted ${id}: ${out.writes.join('; ') || 'no writes'}`);
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: record });
+    const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: record.findings.find((f) => f.id === id).fix.says, writes: out.writes }];
+    st.metadata[STATE_KEY] = {
+        ...state,
+        version: STATE_VERSION,
+        ...(out.ledger && out.ledger !== ledger ? { ledger: out.ledger } : {}),
+        audit: { ...record, ...next, book: bookName, summary: auditSummary(next, bookName), accepted },
+    };
+    await st.saveMetadata();
+    return { writes: out.writes };
+}
+
+/** Whether an audit record still describes this book and this chat: its fixes can be accepted. */
+export function auditIsCurrent(record, book, chat) {
+    try {
+        return record.bookHash === hashOf(book?.entries ?? {}) && record.fingerprint === fingerprint(toMessages(chat));
+    } catch {
+        return false;
+    }
+}
+
+/** Dismisses a finding: it stays listed, and later audits keep it dismissed. */
+export async function dismissFinding(st, id) {
+    const state = st.metadata[STATE_KEY] ?? {};
+    if (!state.audit?.findings) throw new Error('no audit on this chat yet: run /canon-audit');
+    const next = dismiss(state.audit, id);
+    st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, audit: { ...next, summary: auditSummary(next, next.book) } };
+    await st.saveMetadata();
 }

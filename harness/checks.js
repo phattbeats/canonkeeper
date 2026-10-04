@@ -26,6 +26,12 @@
 //       N/cadence detection calls, every message was judged, and each update
 //       followed a scene start the detector found, once, in order (opt-in:
 //       for a live session)
+//   A12 the audit catches what was planted in a built book: a key two
+//       entries claim, an entry deleted by hand (which a re-run must not
+//       bring back), and false facts, each flagged by claim re-verification;
+//       and the audit itself wrote nothing (opt-in: for an audit run)
+//   A13 the audit raises no false alarm on the clean book: no technical
+//       finding, and few claims flagged (opt-in: for an audit run)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -34,6 +40,7 @@ export const THRESHOLDS = {
     minRecall: 1.0, // C7: required entities found
     minPrecision: 0.8, // C7: entries that map to a real entity
     boundaryTolerance: 1, // C8: ± messages
+    maxCleanClaimFlags: 0.15, // A13: share of a clean book's claims the audit may flag
     minBoundaryPrecision: 0.9, // C8
     minBoundaryRecall: 0.9, // C8
 };
@@ -215,6 +222,54 @@ export function checkL11Live(live, messageCount) {
         if (i && t <= updates[i - 1]) problems.push(`an update through ${t} after one through ${updates[i - 1]}`);
     });
     return result('L11', name, !problems.length, { detectCalls: live.detectCalls, budget, judged, updates, problems });
+}
+
+// ── A12 / A13 ────────────────────────────────────────────────────────────────
+
+/** The audit's findings that come from the deterministic pass, not from a model. */
+export const TECHNICAL = ['collision', 'overlap', 'no-keys', 'overbroad', 'probability', 'recursion', 'provenance', 'deleted', 'missing'];
+
+const foldKey = (k) => String(k).trim().toLowerCase();
+
+/**
+ * `planted` is the run's audit directory after harness/plant.js: the plant
+ * (planted.json), the book before the audit (planted-book.json), the book,
+ * the audit's record (audit.json) and the book after a re-run (rerun.json).
+ */
+export function checkA12AuditCatches({ planted, before, book, audit, rerun }) {
+    const name = 'audit catches a planted collision, a deleted entry and false facts';
+    if (!audit || !Array.isArray(audit.findings)) return result('A12', name, false, { reason: 'no audit record' });
+    const problems = [];
+    const findings = audit.findings;
+    const coll = planted.collision;
+    if (!findings.some((f) => f.check === 'collision' && foldKey(f.key) === foldKey(coll.key) && coll.uids.every((u) => f.uids.includes(u)))) {
+        problems.push(`no collision finding for '${coll.key}' on uids ${coll.uids.join(', ')}`);
+    }
+    const gone = planted.deleted;
+    if (!findings.some((f) => f.check === 'deleted' && f.uids.includes(gone.uid))) problems.push(`no finding for the deleted entry '${gone.title}' (uid ${gone.uid})`);
+    if (!rerun) problems.push('no re-run output');
+    else if (rerun.some((e) => e.uid === gone.uid || e.title === gone.title)) problems.push(`a re-run brought back the deleted entry '${gone.title}'`);
+    for (const f of planted.falseFacts) {
+        const hit = findings.find((x) => x.check === 'claim' && x.uids.includes(f.uid) && x.claim === f.text);
+        if (!hit) problems.push(`false fact not flagged: '${f.entity}': ${f.text}`);
+        else if (hit.verdict === 'supported') problems.push(`false fact judged supported: ${f.text}`);
+    }
+    if (!(audit.claims?.checked > 0)) problems.push('no claim was verified');
+    if (!same(before.map((e) => e.raw), book.map((e) => e.raw))) problems.push('the audit changed the book');
+    return result('A12', name, !problems.length, { findings: findings.length, claims: audit.claims ?? null, problems });
+}
+
+export function checkA13AuditQuiet({ audit }, { maxCleanClaimFlags = THRESHOLDS.maxCleanClaimFlags } = {}) {
+    const name = 'audit raises no false alarm on a clean book';
+    if (!audit || !Array.isArray(audit.findings)) return result('A13', name, false, { reason: 'no audit record' });
+    const technical = audit.findings.filter((f) => TECHNICAL.includes(f.check));
+    const checked = audit.claims?.checked ?? 0;
+    const flagged = audit.findings.filter((f) => f.check === 'claim');
+    const problems = [];
+    if (technical.length) problems.push(`${technical.length} technical finding(s) on a clean book`);
+    if (!checked) problems.push('no claim was verified');
+    else if (flagged.length / checked > maxCleanClaimFlags) problems.push(`${flagged.length} of ${checked} claims flagged, more than ${maxCleanClaimFlags * 100}%`);
+    return result('A13', name, !problems.length, { technical: technical.map((f) => f.id), flagged: flagged.map((f) => f.message), checked, maxCleanClaimFlags, problems });
 }
 
 // ── E9 ───────────────────────────────────────────────────────────────────────

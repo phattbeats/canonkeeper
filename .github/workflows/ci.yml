@@ -30,7 +30,10 @@ jobs:
             fixtures/story/edits/undercroft/replies.json \
             fixtures/story/chunked/replies.json \
             fixtures/story/live/detect-replies.json \
-            fixtures/story/live/write-replies.json
+            fixtures/story/live/write-replies.json \
+            fixtures/story/audit/plant.json \
+            fixtures/story/audit/verify-clean.json \
+            fixtures/story/audit/verify-planted.json
 
       # The gate steps below run even if the tests fail, so each signal is
       # reported on its own.
@@ -65,6 +68,28 @@ jobs:
       - name: Gate on a live session must be green
         if: ${{ !cancelled() }}
         run: npm run build:live
+
+      # The audit: a book built from the recorded reply is audited as built
+      # (A13: no technical finding, few claims flagged), and again after
+      # harness/plant.js plants a collision, a deleted entry and two false
+      # facts (A12: all caught, the audit wrote nothing, and a re-run leaves
+      # the deleted entry deleted). Claim verdicts are replayed from a real
+      # model run.
+      - name: Gate on the audit must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:audit
+
+      # A12 has to be able to fail: an audit that saw only the clean book
+      # misses everything planted. Exit 1 (red) is required.
+      - name: An audit that missed the plant must be red
+        if: ${{ !cancelled() }}
+        run: |
+          rm -rf .run/audit-blind && cp -r .run/audit .run/audit-blind
+          cp .run/audit/clean/audit.json .run/audit-blind/planted/audit.json
+          set +e
+          node harness/gate.js --story fixtures/story --run .run/audit-blind --audit
+          code=$?
+          if [ "$code" -ne 1 ]; then echo "expected exit 1 (red), got $code"; exit 1; fi
 
       # K10 has to be able to fail: the one-shot run above must not pass as
       # chunked. Exit 1 (red) is required.

@@ -117,3 +117,32 @@ export function loadEdits(storyDir, runDir) {
         book: loadBook(join(runDir, 'edits', name, 'book.json')),
     }));
 }
+
+/**
+ * An audit run (`--audit`): `<dir>/clean/audit.json`, the audit of the book
+ * as built, and `<dir>/planted/`, a book with damage planted by
+ * harness/plant.js: planted.json, planted-book.json (before the audit),
+ * book.json, audit.json and rerun.json.
+ */
+export function loadAudit(dir) {
+    const p = join(dir, 'planted');
+    const planted = readJson(join(p, 'planted.json'));
+    if (!planted.collision || !planted.deleted || !Array.isArray(planted.falseFacts)) throw new FixtureError(`${p}/planted.json needs collision, deleted and falseFacts`);
+    const before = loadBook(join(p, 'planted-book.json'));
+    // The plant itself must be there, or A12 would test nothing.
+    for (const uid of planted.collision.uids) {
+        const e = before.find((x) => x.uid === uid);
+        if (!e?.keys.some((k) => k.toLowerCase() === planted.collision.key.toLowerCase())) throw new FixtureError(`the planted collision key is not on uid ${uid}`);
+    }
+    if (before.some((e) => e.uid === planted.deleted.uid)) throw new FixtureError(`the planted deletion (uid ${planted.deleted.uid}) is still in the book`);
+    return {
+        clean: { audit: readJson(join(dir, 'clean', 'audit.json')) },
+        planted: {
+            planted,
+            before,
+            book: loadBook(join(p, 'book.json')),
+            audit: readJson(join(p, 'audit.json')),
+            rerun: existsSync(join(p, 'rerun.json')) ? loadBook(join(p, 'rerun.json')) : null,
+        },
+    };
+}

@@ -10,7 +10,8 @@
 //      in full, so keys stay unique across the whole book.
 //   4. The result is diffed against the book (plan.js). Pinned entries,
 //      entries edited by hand and entries Canonkeeper didn't write are held
-//      exactly as they are. Only the plan's writes reach the book.
+//      exactly as they are. An entry a human deleted stays deleted. Only the
+//      plan's writes reach the book.
 //
 // An unchanged transcript makes no model call and compiles to the book it
 // already has: zero writes.
@@ -173,6 +174,10 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
 
     const held = heldEntries(book, ledger.written);
     const kept = held.map((h) => h.entry);
+    // An entry Canonkeeper wrote that is gone from the book was deleted by a
+    // human, now or before. It stays deleted: bringing it back is the
+    // audit's to offer, never a run's to do quietly.
+    const deleted = new Set([...Object.keys(ledger.deleted ?? {}), ...Object.keys(ledger.written).filter((u) => !(u in book.entries))].map(Number));
     const uids = new Map(ledger.entities.filter((e) => e.uid != null).map((e) => [fold(e.name), e.uid]));
     let canon = canonOf(ledger);
     let scenes = ledger.scenes;
@@ -223,7 +228,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
     }
 
     if (starts) scenes = sceneStarts(starts, messages.length);
-    const compiled = compile(canon, messages, { pinned: kept, uids, nextUid: ledger.nextUid });
+    const compiled = compile(canon, messages, { pinned: kept, uids, nextUid: ledger.nextUid, deleted });
     const ops = plan(book, compiled.entries);
     return {
         book: apply(book, ops),

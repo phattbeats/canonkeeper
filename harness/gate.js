@@ -9,8 +9,10 @@
 // run's live.json. The step 5 bar is the invariants, C8 on the scene starts
 // the detector found, and L11. The live book only covers the scenes that have
 // ended, so C7 is scored and shown but doesn't gate.
+// With --audit, the run directory is an audit run (see loadAudit) and the
+// gate runs only A12 and A13: the step 6 bar.
 //
-//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--json]
+//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--audit] [--json]
 //
 // Exit codes: 0 every check green · 1 at least one check red ·
 //             2 fixtures missing or malformed (never a pass)
@@ -18,7 +20,7 @@
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, loadLive, FixtureError } from './load.js';
+import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, loadLive, loadAudit, FixtureError } from './load.js';
 import {
     validateAnswerKey,
     checkI1KeywordCollisions,
@@ -32,15 +34,23 @@ import {
     checkE9EditLocality,
     checkK10Chunked,
     checkL11Live,
+    checkA12AuditCatches,
+    checkA13AuditQuiet,
 } from './checks.js';
 
-export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false }) {
+export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false, audit = false }) {
     const messages = loadTranscript(join(storyDir, 'transcript.jsonl'));
     const key = loadAnswerKey(join(storyDir, 'answer-key.json'));
-    const run = loadRun(runDir);
 
     const keyCheck = validateAnswerKey(key, messages);
     if (!keyCheck.ok) throw new FixtureError(`answer key failed its own validation:\n  - ${keyCheck.problems.join('\n  - ')}`);
+
+    if (audit) {
+        const a = loadAudit(runDir);
+        const checks = [checkA12AuditCatches(a.planted), checkA13AuditQuiet(a.clean)];
+        return { ok: checks.every((c) => c.ok), messages: messages.length, entries: a.planted.book.length, checks };
+    }
+    const run = loadRun(runDir);
 
     const checks = [
         checkI1KeywordCollisions(run.book),
@@ -61,7 +71,7 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
 }
 
 function parseArgs(argv) {
-    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, json: false };
+    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, audit: false, json: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--story') args.story = argv[++i];
         else if (argv[i] === '--run') args.run = argv[++i];
@@ -69,6 +79,7 @@ function parseArgs(argv) {
         else if (argv[i] === '--edits') args.edits = true;
         else if (argv[i] === '--chunked') args.chunked = true;
         else if (argv[i] === '--live') args.live = true;
+        else if (argv[i] === '--audit') args.audit = true;
         else throw new FixtureError(`unknown argument: ${argv[i]}`);
     }
     args.run ??= join(args.story, 'reference');
@@ -80,7 +91,7 @@ function main() {
     let args;
     try {
         args = parseArgs(process.argv.slice(2));
-        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live });
+        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live, audit: args.audit });
     } catch (err) {
         if (!(err instanceof FixtureError)) throw err;
         console.error(`FIXTURE ERROR: ${err.message}`);
