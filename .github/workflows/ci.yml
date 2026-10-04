@@ -24,7 +24,8 @@ jobs:
             fixtures/story/reference/book.json \
             fixtures/story/reference/rerun.json \
             fixtures/story/reference/scenes.json \
-            fixtures/story/broken-collision/book.json
+            fixtures/story/broken-collision/book.json \
+            fixtures/story/recorded/replies.json
 
       # The gate steps below run even if the tests fail, so each signal is
       # reported on its own.
@@ -34,6 +35,13 @@ jobs:
       - name: Gate on the reference run must be green
         if: ${{ !cancelled() }}
         run: node harness/gate.js --story fixtures/story --run fixtures/story/reference
+
+      # The builder itself, end to end: a model reply recorded from a real
+      # run is replayed through the core, a human pin is simulated, the book
+      # is re-run, and the gate scores the result. No model call in CI.
+      - name: Gate on the builder's own output must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:story
 
       # Negative control: the gate has to be able to fail. Exit 1 (red) is
       # required here; 0 (a pass) or 2 (fixture error) both fail the job.

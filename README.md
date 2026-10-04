@@ -4,7 +4,35 @@ Canonkeeper turns a SillyTavern roleplay chat into a correct, self-maintaining W
 
 It's a clean-room build. It's written from its own spec and SillyTavern's public APIs and lorebook format, and not from any other extension's code.
 
-**Status: build step 0 (test data and harness).** There's no builder yet. This repo holds the fixtures and the acceptance gate that every later step has to pass.
+**Status: build step 1 (one-shot core, offline).** The core turns a transcript file into a complete lorebook in one model call. There's no SillyTavern adapter yet (step 3), so it runs from the command line.
+
+## The one-shot core (`src/`)
+
+```bash
+node bin/canonkeeper.js build <chat.jsonl> --out <dir> [--model claude-sonnet-5] [--context 200000]
+node bin/canonkeeper.js pin   <dir> "<entry title>"      # mark an entry human-pinned
+node bin/canonkeeper.js rerun <chat.jsonl> --run <dir>   # writes <dir>/rerun.json
+npm run build:story                                      # replay the recorded reply, then gate it
+```
+
+`build` writes `book.json`, `scenes.json`, `ledger.json` and `replies.json` (the raw model reply, which `--replay` plays back with no model). The offline model is the Claude Code CLI in print mode, with no tools.
+
+How it works:
+
+1. **Size from the window.** `--context` is the model's context window. A quarter of it, capped at 64k, is reserved for output and the rest is the prompt budget. A story that doesn't fit is refused before any call. Long stories are step 4's chunked fallback.
+2. **One call.** The model sees every message, numbered, and returns scene starts plus, per entity, six fields: `name`, `keys`, `facts` (the content, each fact citing its message ids), `caseSensitive`, `cascade` and `throttle`. The reply must be strict JSON. It gets one retry, then the run fails. Nothing is repaired by guessing.
+3. **Code writes the lorebook** (`src/compile.js`). One key registry sees every entity at once:
+   - a key the transcript never uses is dropped;
+   - a capitalised key whose lowercase form also appears in the story makes the entry case-sensitive (Wren the runner vs. a wren);
+   - a key that fires on more than 80% of messages is dropped;
+   - a key two entities claim is dropped from both, unless one is pinned, in which case the pin keeps it;
+   - two replies about the same name are merged, never split.
+
+   An entity with no usable key left, or whose cited messages never mention any of its keys, goes to the review list in `ledger.json` instead of the book. The model never writes an ST field: `cascade: false` compiles to `preventRecursion`, and `throttle` to `cooldown`.
+4. **Provenance on every fact.** Each entry carries `canonkeeper.facts[]` with the source ranges for each fact, and `canonkeeper.sources` is their union.
+5. **Re-runs.** The ledger records a fingerprint of the transcript. An unchanged transcript re-runs with zero writes and no model call. A changed one is rebuilt with every pinned entry kept as it is. Step 2 replaces that rebuild with an incremental update.
+
+`harness/compare.js` scores a built book against a hand-curated one for real chats that have no answer key. Real chats stay out of the repo: put them under `local/`, which is gitignored.
 
 ## The acceptance gate
 
