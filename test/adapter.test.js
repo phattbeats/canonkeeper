@@ -27,12 +27,16 @@ function fakeST({ replies = recorded, metadata = {}, books = {} } = {}) {
         metadataSaves: 0,
         open: 'Saltwind - 2026-10-04',
         currentChatId: () => st.open,
-        loadBook: async (name) => (name in st.books ? structuredClone(st.books[name]) : null),
+        bookExists: async (name) => name in st.books,
+        // As SillyTavern does: a name it doesn't have reads as an empty book.
+        loadBook: async (name) => structuredClone(st.books[name] ?? { entries: {} }),
         saveBook: async (name, data) => {
             st.writes++;
             st.books[name] = structuredClone(data);
         },
+        created: [],
         createBook: async (name) => {
+            st.created.push(name);
             st.books[name] = { entries: {} };
         },
         saveMetadata: async () => {
@@ -54,6 +58,7 @@ test('first run builds the book, binds it to the chat and stores the ledger', as
     const { result, bookName } = await runCanon(st);
     assert.equal(bookName, bookNameFor(st.chatId));
     assert.equal(st.metadata.world_info, bookName);
+    assert.deepEqual(st.created, [bookName]);
     assert.equal(st.writes, 1);
     assert.ok(Object.keys(st.books[bookName].entries).length > 10);
     assert.deepEqual(st.books[bookName], result.book);
@@ -101,6 +106,7 @@ test('an existing chat lorebook is used, and its own entries are held', async ()
     assert.deepEqual(st.books['My Book'].entries[0], foreign);
     assert.ok(result.held.some((h) => h.uid === 0 && h.reason === 'not written by Canonkeeper'));
     assert.ok(!(bookNameFor(st.chatId) in st.books));
+    assert.deepEqual(st.created, []);
 });
 
 test('nothing is written if the chat is switched during the run', async () => {

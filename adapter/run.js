@@ -81,7 +81,7 @@ function summarize(result, bookName) {
  *
  *   chatId, chat, metadata         the open chat and its chat_metadata
  *   currentChatId()                to check the same chat is still open
- *   loadBook(name), saveBook(name, data), createBook(name)
+ *   bookExists(name), loadBook(name), saveBook(name, data), createBook(name)
  *   saveMetadata()
  *   generate                       the core's generate (profileGenerate)
  *   settings                       { contextTokens, maxOutputTokens }
@@ -116,7 +116,9 @@ export async function runCanon(st) {
         let bookName = st.metadata.world_info;
         if (!bookName) {
             bookName = bookNameFor(st.chatId);
-            if (!(await st.loadBook(bookName))) {
+            // SillyTavern hands back an empty book for a name it doesn't have,
+            // so whether it exists comes from its list of books.
+            if (!(await st.bookExists(bookName))) {
                 await st.createBook(bookName);
                 log(`created lorebook '${bookName}'`);
             }

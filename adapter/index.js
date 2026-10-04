@@ -46,6 +46,7 @@ async function canon() {
             chat: c.chat,
             metadata: c.chatMetadata,
             currentChatId: () => ctx().chatId,
+            bookExists: async (name) => c.getWorldInfoNames().includes(name),
             loadBook: async (name) => {
                 const data = await c.loadWorldInfo(name);
                 return data ? structuredClone(data) : null;
@@ -138,7 +139,13 @@ async function renderStatus(phase) {
             parts.push(`<details><summary>Entries in '${esc(bookName)}' (${entries.length}); tick to pin</summary>${rows.join('')}</details>`);
         }
     }
+    // Re-rendering keeps open whichever sections were open, so ticking one
+    // pin doesn't fold the list away.
+    const open = new Set([...el.querySelectorAll('details[open] > summary')].map((x) => x.textContent.split(' ')[0]));
     el.innerHTML = parts.join('');
+    el.querySelectorAll('details > summary').forEach((x) => {
+        if (open.has(x.textContent.split(' ')[0])) x.parentElement.open = true;
+    });
     el.querySelectorAll('input[data-uid]').forEach((box) => box.addEventListener('change', () => setPin(bookName, box.dataset.uid, box.checked)));
 }
 
