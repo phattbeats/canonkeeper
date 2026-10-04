@@ -58,6 +58,19 @@ test('a key two entities claim is dropped from both', () => {
     for (const e of entries) assert.ok(!e.key.map((k) => k.toLowerCase()).includes('captain'), e.comment);
 });
 
+test('a bare title only one entity claims is still dropped when another entity keys it in a phrase', () => {
+    // Haiku gave Mora the bare 'Captain' and Oren only 'Captain Hale'.
+    const { entries, contested } = compile([ent('Mora Quill', ['Quill', 'Captain'], [2]), ent('Oren Hale', ['Hale', 'Captain Hale'], [8])], messages);
+    assert.deepEqual(contested, ['captain']);
+    assert.ok(!titled(entries, 'Mora Quill').key.includes('Captain'));
+    assert.ok(titled(entries, 'Oren Hale').key.includes('Captain Hale'));
+});
+
+test('a word of an entity\'s own name is not contested by another entity\'s phrase', () => {
+    const { entries } = compile([ent('Mora Quill', ['Quill'], [2]), ent('Quill Street', ['Quill Street'], [8])], messages);
+    assert.ok(titled(entries, 'Mora Quill').key.includes('Quill'));
+});
+
 test('a name that is also a lowercase word becomes case-sensitive', () => {
     const { entries } = compile([ent('Wren', ['Wren'], [6])], messages);
     assert.equal(entries[0].caseSensitive, true);

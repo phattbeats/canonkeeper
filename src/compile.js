@@ -122,6 +122,20 @@ export function compile(entities, messages, { pinned = [] } = {}) {
     const hold = (k, id) => (holders.get(fold(k)) ?? holders.set(fold(k), new Set()).get(fold(k))).add(id);
     pinned.forEach((p, i) => (p.key ?? []).forEach((k) => hold(k, `pin:${i}`)));
     candidates.forEach((c, i) => c.keys.forEach((k) => hold(k, `new:${i}`)));
+    // A bare title one entity claims ("Captain") is still contested when it is
+    // a word in another entity's key ("Captain Hale") and not in its own name.
+    const words = (k) => fold(k).split(/\s+/);
+    const keyWords = new Map(); // folded word -> holder ids whose multi-word keys contain it
+    const addWords = (k, id) => words(k).length > 1 && words(k).forEach((w) => (keyWords.get(w) ?? keyWords.set(w, new Set()).get(w)).add(id));
+    pinned.forEach((p, i) => (p.key ?? []).forEach((k) => addWords(k, `pin:${i}`)));
+    candidates.forEach((c, i) => c.keys.forEach((k) => addWords(k, `new:${i}`)));
+    candidates.forEach((c, i) => {
+        const own = new Set(words(c.name));
+        for (const k of c.keys) {
+            if (words(k).length > 1 || own.has(fold(k))) continue;
+            for (const id of keyWords.get(fold(k)) ?? []) if (id !== `new:${i}`) hold(k, id);
+        }
+    });
     const contested = [...holders].filter(([, ids]) => ids.size > 1).map(([k]) => k);
     for (const c of candidates) {
         c.keys = c.keys.filter((k) => {
