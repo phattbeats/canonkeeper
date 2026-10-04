@@ -18,7 +18,13 @@
     { "name": "Gull's Errand", "type": "item", "required": true, "aliases": [] },
     { "name": "Harbor Fire", "type": "event", "required": true, "aliases": [] },
     { "name": "Lighthouse Bargain", "type": "event", "required": true, "aliases": [] },
-    { "name": "Lamplighters' Guild", "type": "faction", "required": true, "aliases": ["Lamplighters"] }
+    { "name": "Lamplighters' Guild", "type": "faction", "required": true, "aliases": ["Lamplighters"] },
+    { "name": "Morrow letters", "type": "item", "required": false, "aliases": [] },
+    { "name": "Harbor chain", "type": "item", "required": false, "aliases": [] },
+    { "name": "Tariff receipts", "type": "item", "required": false, "aliases": ["parcel"] },
+    { "name": "Magistrate's Hall", "type": "location", "required": false, "aliases": [] },
+    { "name": "Cartographer's workshop", "type": "location", "required": false, "aliases": ["workshop"] },
+    { "name": "Ines Vell's trial", "type": "event", "required": false, "aliases": ["trial", "treason"] }
   ],
   "contestedKeys": ["Captain"],
   "planted": {
