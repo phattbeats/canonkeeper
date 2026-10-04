@@ -15,7 +15,7 @@ node bin/canonkeeper.js rerun <chat.jsonl> --run <dir>   # writes <dir>/rerun.js
 npm run build:story                                      # replay the recorded reply, then gate it
 ```
 
-`build` writes `book.json`, `scenes.json`, `ledger.json` and `replies.json` (the raw model reply, which `--replay` plays back with no model). The offline model is the Claude Code CLI in print mode, with no tools.
+`build` writes `book.json`, `scenes.json`, `ledger.json` and `replies.json` (the raw model reply, which `--replay` plays back with no model). The offline model is the Claude Code CLI in print mode, with no tools and thinking off. A reply cut off at the output limit counts as a bad reply.
 
 How it works:
 
@@ -28,7 +28,7 @@ How it works:
    - a key two entities claim is dropped from both, unless one is pinned, in which case the pin keeps it;
    - two replies about the same name are merged, never split.
 
-   An entity with no usable key left, or whose cited messages never mention any of its keys, goes to the review list in `ledger.json` instead of the book. The model never writes an ST field: `cascade: false` compiles to `preventRecursion`, and `throttle` to `cooldown`.
+   An entity with no usable key left goes to the review list in `ledger.json` instead of the book. If none of an entity's cited messages names it (the model cited scenes that call him "the King"), the first message that does name it is added to `sources` as `canonkeeper.anchor`, kept apart from the facts' own sources. The model never writes an ST field: `cascade: false` compiles to `preventRecursion`, and `throttle` to `cooldown`.
 4. **Provenance on every fact.** Each entry carries `canonkeeper.facts[]` with the source ranges for each fact, and `canonkeeper.sources` is their union.
 5. **Re-runs.** The ledger records a fingerprint of the transcript. An unchanged transcript re-runs with zero writes and no model call. A changed one is rebuilt with every pinned entry kept as it is. Step 2 replaces that rebuild with an incremental update.
 

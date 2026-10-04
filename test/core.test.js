@@ -98,10 +98,11 @@ test('a key that fires on nearly every message is dropped', () => {
     assert.match(review[0].reason, /no usable key/);
 });
 
-test('an entity whose sources never mention it goes to review, not the book', () => {
-    const { entries, review } = compile([ent('Saltgate', ['Saltgate'], [1])], messages);
-    assert.equal(entries.length, 0);
-    assert.match(review[0].reason, /cited messages/);
+test('an entity cited only where it goes unnamed gets an anchor where it is named', () => {
+    const [entry] = compile([ent('Saltgate', ['Saltgate'], [1])], messages).entries;
+    assert.equal(entry.canonkeeper.anchor, 0);
+    assert.deepEqual(entry.canonkeeper.sources, [[0, 1]]);
+    assert.deepEqual(entry.canonkeeper.facts[0].sources, [[1, 1]]);
 });
 
 test('every fact keeps its own provenance and the entry gets their union', () => {

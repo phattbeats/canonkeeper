@@ -8,7 +8,8 @@ export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
     return ({ system, user, maxTokens }) =>
         new Promise((resolve, reject) => {
             const args = ['-p', '--model', model, '--system-prompt', system, '--tools', '', '--output-format', 'json', '--no-session-persistence'];
-            const env = { ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens) };
+            // Thinking would spend the output budget the lorebook needs.
+            const env = { ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens), MAX_THINKING_TOKENS: '0' };
             const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
             let out = '';
             let err = '';
@@ -23,9 +24,10 @@ export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
                     return reject(new Error(`claude exited ${code}: ${err || out}`.slice(0, 2000)));
                 }
                 if (parsed.is_error || typeof parsed.result !== 'string') return reject(new Error(`claude failed: ${JSON.stringify(parsed).slice(0, 2000)}`));
-                // A reply cut off at the output limit is not a reply; returning
-                // it would hand the parser a fragment.
-                if (parsed.stop_reason === 'max_tokens') return resolve('');
+                // A reply cut off at the output limit is not a reply. The CLI
+                // continues it in a second iteration and `result` then holds
+                // only the tail, so either sign means: hand back nothing.
+                if (parsed.stop_reason === 'max_tokens' || (parsed.usage?.iterations?.length ?? 1) > 1) return resolve('');
                 resolve(parsed.result);
             });
             child.stdin.end(user);

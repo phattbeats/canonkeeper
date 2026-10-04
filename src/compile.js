@@ -131,21 +131,21 @@ export function compile(entities, messages, { pinned = [] } = {}) {
         });
     }
 
-    // 3. Ship only what can fire and is grounded in its own sources.
+    // 3. Ship only what can fire, with provenance that names the entity.
     const shipped = [];
     for (const c of candidates) {
         if (!c.keys.length) {
             review.push({ name: c.name, reason: 'no usable key left', dropped: c.dropped });
             continue;
         }
-        const sources = toRanges(c.facts.flatMap((f) => f.messages));
         const cited = new Set(c.facts.flatMap((f) => f.messages));
-        const grounded = c.keys.some((k) => firesOn(k, c.caseSensitive, messages).some((id) => cited.has(id)));
-        if (!grounded) {
-            review.push({ name: c.name, reason: 'none of its cited messages mentions any of its keys', keys: c.keys, sources });
-            continue;
-        }
-        shipped.push({ ...c, sources, first: sources[0][0] });
+        const mentions = [...new Set(c.keys.flatMap((k) => firesOn(k, c.caseSensitive, messages)))].sort((a, b) => a - b);
+        // The model may cite scenes that refer to an entity without naming it
+        // ("the King"). Then the first message that does name it is added as
+        // an anchor, recorded apart from the facts' own sources.
+        const anchor = mentions.some((id) => cited.has(id)) ? null : mentions[0];
+        const sources = toRanges(anchor == null ? [...cited] : [...cited, anchor]);
+        shipped.push({ ...c, sources, anchor, first: sources[0][0] });
     }
 
     // 4. Stable order and uids: story order, then name. Pinned uids are never reused.
@@ -158,7 +158,7 @@ export function compile(entities, messages, { pinned = [] } = {}) {
         while (taken.has(next)) next++;
         const uid = next++;
         entries.push(toEntry(uid, c));
-        ledger.push({ uid, name: c.name, keys: c.keys, dropped: c.dropped, caseSensitive: c.caseSensitive, cascade: c.cascade, throttle: c.throttle, facts: c.facts });
+        ledger.push({ uid, name: c.name, keys: c.keys, dropped: c.dropped, caseSensitive: c.caseSensitive, cascade: c.cascade, throttle: c.throttle, facts: c.facts, anchor: c.anchor });
     }
     entries.sort((a, b) => a.uid - b.uid);
     return { entries, ledger, review, contested };
@@ -191,6 +191,7 @@ export function toEntry(uid, c) {
             sources: c.sources,
             pinned: false,
             facts: c.facts.map((f) => ({ text: f.text, sources: toRanges(f.messages) })),
+            ...(c.anchor == null ? {} : { anchor: c.anchor }),
         },
     };
 }
