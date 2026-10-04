@@ -4,7 +4,7 @@ Canonkeeper turns a SillyTavern roleplay chat into a correct, self-maintaining W
 
 It's a clean-room build. It's written from its own spec and SillyTavern's public APIs and lorebook format, and not from any other extension's code.
 
-**Status: build step 5 (live mode).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). With live mode on, the book keeps up while you play: a cheap model notices when a scene ends, and the scene that ended goes through step 2's update (step 5). The command line still works for offline runs.
+**Status: build step 6 (the audit).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). With live mode on, the book keeps up while you play: a cheap model notices when a scene ends, and the scene that ended goes through step 2's update (step 5). `/canon-audit` checks the book: plain code finds what's technically wrong, a model checks every claim against the messages it cites, and every fix waits for you to accept it (step 6). The command line still works for offline runs.
 
 ## The one-shot core (`src/`)
 
@@ -13,6 +13,9 @@ node bin/canonkeeper.js build <chat.jsonl> --out <dir> [--model claude-sonnet-5]
 node bin/canonkeeper.js pin   <dir> "<entry title>"      # mark an entry human-pinned
 node bin/canonkeeper.js update <chat.jsonl> --run <dir> [--out <dir>] [--dry-run]   # print the plan, then apply it
 node bin/canonkeeper.js rerun <chat.jsonl> --run <dir>   # same, but writes only <dir>/rerun.json
+node bin/canonkeeper.js audit <chat.jsonl> --run <dir> [--model claude-haiku-4-5-20251001] [--no-verify]   # writes <dir>/audit.json
+node bin/canonkeeper.js accept <chat.jsonl> --run <dir> <finding id>                                      # apply one fix
+node bin/canonkeeper.js dismiss <dir> <finding id>
 npm run build:story                                      # replay the recorded replies, then gate them
 npm run build:chunked                                    # the same story on a window too small for it
 ```
@@ -116,6 +119,52 @@ ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0
 BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-session.mjs
 ```
 
+## The audit (`src/audit.js`, `/canon-audit`)
+
+The audit checks a lorebook against its chat and writes nothing to it. It has two passes.
+
+1. **The technical pass is plain code and makes no model call.** It reads every enabled entry, Canonkeeper's or not, the way SillyTavern does (regex keys, case and whole-word settings). It reports:
+   - a key two entries claim (`collision`, an error);
+   - a bare title inside another entry's key, such as "Captain" against "Captain Hale" (`overlap`, a warning);
+   - an entry with no keys (`no-keys`);
+   - a key that fires on more than 80% of the messages (`overbroad`);
+   - a probability of 0 or outside 0–100, or below 100 (`probability`; the last is a warning);
+   - an entry that waits for recursion when nothing can trigger it, or that also excludes recursion (`recursion`);
+   - provenance that cites messages outside the chat, or none that name the entry (`provenance`);
+   - an entry Canonkeeper wrote that has been deleted (`deleted`);
+   - an entity the story has that got no entry (`missing`).
+2. **Claim re-verification reads provenance.** Each fact an entry carries cites its messages. The model gets each fact with exactly those messages, and says what they say before it gives a verdict: supported, unsupported or contradicted. Facts are batched to fit the window, one entry's facts kept together. A fact that cites a message changed since the book was written is `stale`: it can't be checked until `/canon` brings it up to date. The verdicts are strict JSON with one retry. A claim with no usable verdict stays unchecked, and nothing is assumed either way.
+
+**The review queue.** A finding that can be fixed carries its fix, and nothing is applied until someone accepts it. Every fix changes something a person may want as it is: an entry they edited or deleted, or a fact the model wrote.
+
+| Fix | Offered for | What accepting it does |
+|---|---|---|
+| remove the key | a collision (from every claimant that isn't pinned; between two pins, only a human can choose) or an overbroad key | edits those entries, as you would in the World Info editor. An entry Canonkeeper wrote is then edited by hand and held |
+| change the setting | a probability or recursion problem | sets `probability` to 100 or `delayUntilRecursion` to false |
+| restore | a deleted entry | takes it off the ledger's `deleted`, and the entry comes back on its old uid, as it was |
+| drop the fact | an unsupported or contradicted claim in an entry Canonkeeper still owns | takes the fact out of the ledger's canon and recompiles, with no model call. A claim in a held entry is reported but not offered: that text is yours |
+
+When Canonkeeper's own entry is the problem, the finding says to run `/canon` instead, because `/canon` fixes its own entries. That covers a key it shares with a held entry, or a key that has grown overbroad. A fix is refused if the book or the chat has changed since the audit: audit again first. Accepting a fix runs the technical pass again, so the queue matches the book. Claim verdicts carry over to the new queue. A dismissed finding stays dismissed in later audits.
+
+In SillyTavern, type `/canon-audit` or press **Audit** in the panel. The status view shows the review queue with an **Accept** and a **Dismiss** button per finding, then the dismissed and accepted ones and the audit's log. The record lives in `chat_metadata.canonkeeper.audit`. Claim checking is on by default and uses the **Claim check profile**. If that isn't set, it uses the scene detection profile, then the writer's.
+
+### Measured on the fixture
+
+`npm run build:audit` builds the fixture book from the recorded reply and audits it as built. Then `harness/plant.js` plants damage from `fixtures/story/audit/plant.json` into a second build, and that one is audited too:
+
+- two false facts in the model's reply: the lighthouse keeper is "a young woman who lets Tamsin in without a word" (message 40 says an old man in a monk's habit, who speaks), and Mora Quill "was born in Saltgate and served ten years in the city watch" (message 2 says nothing of it);
+- "Captain" added to both Mora Quill and Oren Hale, the story's planted collision;
+- The Harbor Fire deleted.
+
+| Claim checker | Runs | Clean book: claims flagged (of 59) | Planted: both false facts caught | Planted: other claims flagged |
+|---|---|---|---|---|
+| claude-haiku-4-5 | 4 | 0, 0, 0, 0 | 4 of 4 (contradicted; unsupported) | 0, 0, 0, 1 |
+| claude-sonnet-5 | 4 | 4, 2, 5, 5 | 4 of 4 | 4, 7, 2, 4 |
+
+The technical pass caught the collision and the deletion every time, and found nothing on the clean book. Sonnet flags more. Most of its flags are real mis-citations, a fact citing the message before or after the one that says it. Some are pedantic. Haiku flagged none of those, so the cheap model is the default here too. Before the reply put its reasoning ahead of the verdict, Sonnet sometimes argued itself to "supported" and still answered "unsupported".
+
+Before step 6, `/canon` silently added a deleted entry back. The re-run in `build:audit` now makes zero writes, and A12 checks that the entry stays deleted.
+
 ## Re-runs (`src/update.js`, `src/plan.js`, `src/align.js`)
 
 The ledger (`ledger.json`, versioned, one per chat) is the state, and the lorebook is the output. It holds:
@@ -135,6 +184,8 @@ The ledger (`ledger.json`, versioned, one per chat) is the state, and the lorebo
    - a pinned entry;
    - an entry edited by hand (its hash no longer matches the ledger);
    - an entry Canonkeeper didn't write.
+
+   An entry Canonkeeper wrote that has been deleted from the book stays deleted. Its entity stays in the canon, under the ledger's `deleted`, but gets no entry, and its keys are free. Only accepting the audit's restore brings it back.
 
    An update rewrites only the fields Canonkeeper owns (`key`, `comment`, `content`, `caseSensitive`, `preventRecursion`, `cooldown`, `canonkeeper`). Order, position, depth, `disable` and the rest stay as the user set them, and changing them isn't an edit.
 
@@ -180,9 +231,13 @@ npm run gate    # the gate on the hand-built reference run: must be green
 node harness/gate.js --run <run-dir>   # gate any builder's output
 node harness/gate.js --run <run-dir> --chunked   # a run on a window too small for the story
 node harness/gate.js --run <run-dir> --live      # a live session (harness/live-sim.js, st-session.mjs)
+node harness/gate.js --run <audit-dir> --audit   # an audit run (npm run build:audit, st-audit.mjs)
+npm run build:audit                              # build, audit, plant, audit again, re-run, then gate --audit
 ```
 
 With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's bar for a chunked run is I1–I6 plus K10, so C7 and C8 are scored and shown as `INFO` but don't gate it.
+
+With `--audit`, the run directory is an audit run (below), and the gate runs only A12 and A13: step 6's bar.
 
 With `--live`, the gate also runs L11 on the run's `live.json`. Step 5's bar for a live session is I1–I6, C8 on the scene starts the detector found, and L11. The live book covers only the scenes that have ended, so C7 is shown as `INFO`.
 
@@ -206,6 +261,8 @@ The checks test properties and coverage, never wording. A builder that writes be
 | C8 | Scene boundaries at ±1 message, with precision and recall both at least 0.9 |
 | E9 | With `--edits` only. For each edit fixture, the run's updated book changes only entries of the edited scene: entries that cite a message there, or whose keys fire there before or after the edit. A pinned entry may not change at all, and an edit that changes nothing is red. A missing update output is a fixture error |
 | L11 | With `--live` only. The session's state store shows detection on a cadence: at most N/cadence detection calls for N messages, and every message judged except the few still waiting. At least one update ran, and each one brought the book up to a scene start the detector found, further than the one before. Per-message detection is red |
+| A12 | With `--audit` only. The audit of the planted book caught the collision on both entries, the deleted entry and every planted false fact (judged anything but supported). It verified at least one claim and changed nothing in the book, and a re-run left the deleted entry deleted. The plant itself is checked first: a missing plant is a fixture error |
+| A13 | With `--audit` only. The audit of the book as built has no technical finding, verified at least one claim, and flagged at most 15% of them |
 | K10 | With `--chunked` only. The run's `ledger.json` says it was built in parts: two or more parts that read every message exactly once, in order, and a reconciliation record. A one-shot run gated as chunked is red |
 
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
@@ -225,6 +282,7 @@ The fixture story is *The Saltwind Chart*. It's an invented 81-message story wit
 | `recorded/replies.json` | A full-build reply recorded from a real model run, replayed in CI |
 | `chunked/replies.json` | The replies recorded from a real chunked build (claude-sonnet-5) with `--context 10000 --output-share 0.5`: four parts (two of them handed an unfinished scene to the next) and a reconciliation. Part 3 renamed "the cartographer" to Ines Vell. It passes I1–I6 and K10. C7 misses the Drowned Lantern and the Gull's Errand, which no part listed. Replayed in CI |
 | `live/` | The replies recorded from a real live session (`harness/live-sim.js`): the detector's (claude-haiku-4-5) and the writer's (claude-sonnet-5). `npm run build:live` replays them through the adapter's tick and gates the result with `--live`. Replayed in CI |
+| `audit/` | `plant.json`, the damage `harness/plant.js` plants for the audit: two false facts, a collision and a deletion. `verify-clean.json` and `verify-planted.json` are claim verdicts recorded from a real run (claude-haiku-4-5), replayed in CI by `npm run build:audit` |
 | `edits/undercroft/` | The story with one scene (20–29) edited. Message 20 changes who cut the Undercroft (the Brine Kings), and message 22 adds a new character (Fennick Rye). `replies.json` is the update reply recorded from a real model run (claude-sonnet-5) |
 
 The story plants three cases for the checks to catch:
@@ -243,5 +301,7 @@ A builder's output for a transcript is a directory containing three files:
 - `rerun.json`: the book after re-running on the unchanged transcript, starting from `book.json` with its pins in place.
 - `scenes.json`: `{ "boundaries": [id, ...] }`, the ids of messages that start a new scene. Message 0 is excluded.
 - `edits/<name>/book.json` (for `--edits`): `book.json` brought up to date with `fixtures/story/edits/<name>/transcript.jsonl`.
+
+An audit run (`--audit`) is a directory with `clean/audit.json`, the audit of the book as built, and `planted/`. That holds `planted.json` (the uids planted), `planted-book.json` (the book as planted, before the audit), `book.json` (the book after the audit), `audit.json` and `rerun.json` (the book after a re-run).
 
 Keyword activation follows SillyTavern's documented World Info matching. A `/regex/flags` key is treated as a regex. When whole-word matching is on, a single-word key must match a whole word and a multi-word key matches as a substring. Matching is case-insensitive unless the entry is case-sensitive. A null per-entry setting falls back to `DEFAULTS` in `harness/activation.js`.

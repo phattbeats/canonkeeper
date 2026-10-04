@@ -225,8 +225,11 @@ async function main() {
     await page.click('#third_party_extension_button');
     await page.waitForSelector('dialog.popup[open] .popup-input', { timeout: 30000 });
     await page.fill('dialog.popup[open] .popup-input', REPO_URL);
+    await sleep(1000);
     await page.click('dialog.popup[open] .popup-button-ok');
     log(`[ui] Install extension: entered ${REPO_URL}`);
+    // The warning is a second dialog: wait for the install dialog to go first.
+    await page.locator('dialog.popup[open] .popup-input').waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
     try {
         const warning = page.locator('dialog.popup[open]', { hasText: /third-party/i });
         await warning.waitFor({ timeout: 15000 });

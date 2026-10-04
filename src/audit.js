@@ -304,7 +304,7 @@ Verdicts:
 
 Judge what the claim says, not how it is worded. Return only the JSON object. No prose, no code fences.`;
 
-export const VERDICT_SHAPE = `{ "claims": [ { "id": "<claim id>", "why": "<in a sentence: what the cited messages say about it>", "verdict": "supported" | "unsupported" | "contradicted" } ] }`;
+export const VERDICT_SHAPE = `{ "claims": [ { "id": "<claim id>", "why": "<in a sentence: what the cited messages say about it; quote the story in 'single quotes', never double>", "verdict": "supported" | "unsupported" | "contradicted" } ] }`;
 
 export function buildVerifyPrompt(messages, claims) {
     const ids = [...new Set(claims.flatMap((c) => c.ids))].sort((a, b) => a - b);
