@@ -5,4 +5,5 @@
 .canonkeeper .canonkeeper-ok { color: var(--SmartThemeQuoteColor, #6c6); }
 .canonkeeper .canonkeeper-error { color: #e66; }
 .canonkeeper .canonkeeper-running { font-style: italic; }
-.canonkeeper .canonkeeper-entry { display: block; }
+.canonkeeper .canonkeeper-entry { display: flex; align-items: baseline; gap: 6px; }
+.canonkeeper .canonkeeper-entry input { flex: none; margin: 0; }

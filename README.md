@@ -79,6 +79,16 @@ How the adapter works:
 - The model call skips the profile's generation preset, so a roleplay preset's prompts don't reach the lorebook writer. A reply cut off at the output limit counts as a bad reply.
 - The call isn't streamed. A reply that takes longer than the server's HTTP timeout fails the run, which matters for long stories (step 4).
 
+### The live acceptance run (`harness/live/st-live.mjs`)
+
+This drives a fresh SillyTavern through a real browser, as a user would. It installs the extension from the repo URL, makes a connection profile, picks it in the panel, opens the fixture chat and types `/canon`. Then it pins two entries in the status view and types `/canon` again. Every check reads SillyTavern's HTTP API from outside the page: the extension on disk, the lorebook file and the run record in the chat file. Nothing relies on the page reporting its own success. It writes `live.log`, screenshots and a run directory, then gates that run directory.
+
+```bash
+npm i --no-save playwright-core
+ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0.1:8000 \
+BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-live.mjs
+```
+
 ## The acceptance gate
 
 ```bash
