@@ -18,3 +18,24 @@ export function fingerprint(messages) {
     const text = messages.map((m) => `${m.id}\u0000${m.name}\u0000${m.text}`).join('\u0001');
     return `${messages.length}:${hash53(text, 1)}${hash53(text, 2)}`;
 }
+
+/**
+ * One message's content, apart from its position: a message that only moved
+ * (something was inserted or deleted before it) keeps its hash.
+ */
+export function messageHash(m) {
+    const text = `${m.name}\u0000${m.text}`;
+    return hash53(text, 1);
+}
+
+function canonical(value) {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical(value[k])]));
+    return value;
+}
+
+/** A content hash of any JSON value, independent of object key order. */
+export function hashOf(value) {
+    const text = JSON.stringify(canonical(value)) ?? '';
+    return hash53(text, 1) + hash53(text, 2);
+}

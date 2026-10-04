@@ -17,6 +17,8 @@
 //   C7  entity coverage against the answer key: found / missed / extra, plus
 //       splits, over-merges, reachability, case-trap decoys, contested keys
 //   C8  scene-boundary precision and recall at ±tolerance messages
+//   E9  editing one scene changes only that scene's entities, and pinned
+//       entries survive the edit (opt-in: needs an edit fixture and output)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -151,6 +153,48 @@ export function checkI6PinsSurvive(book, rerun) {
         }
     }
     return result('I6', name, offenders.length === 0, { pinned: pinned.map((e) => e.uid), offenders });
+}
+
+// ── E9 ───────────────────────────────────────────────────────────────────────
+
+/**
+ * `before` is the book built from `original`; `after` is that book updated
+ * for `edited`, a copy of the transcript with messages changed inside one
+ * scene (scenes from the answer key's `boundaries`). An entry belongs to the
+ * scene if it cites a message there or one of its keys fires on one, before
+ * or after the edit. Only those may change. A pinned entry may not change
+ * at all. And the edit must change something: a builder that ignores edits
+ * proves nothing.
+ */
+export function checkE9EditLocality(before, after, original, edited, boundaries) {
+    const name = 'editing one scene changes only its entities';
+    if (!before.length) return emptyFail('E9', name);
+    if (original.length !== edited.length) return result('E9', name, false, { reason: 'the edit fixture must edit messages in place, not add or remove them' });
+    const changedIds = original.filter((m, i) => m.text !== edited[i].text || m.name !== edited[i].name).map((m) => m.id);
+    if (!changedIds.length) return result('E9', name, false, { reason: 'the edited transcript is identical to the original' });
+    const starts = [0, ...boundaries];
+    const sceneOf = (id) => starts.filter((s) => s <= id).pop();
+    const scenes = [...new Set(changedIds.map(sceneOf))];
+    if (scenes.length !== 1) return result('E9', name, false, { reason: 'the edit spans more than one scene', changedIds });
+    const from = scenes[0];
+    const to = (starts.find((s) => s > from) ?? original.length) - 1;
+    const inScene = (e) =>
+        e.sources.some(([a, b]) => a <= to && b >= from) ||
+        [original, edited].some((msgs) => msgs.slice(from, to + 1).some((m) => entryFires(e, m.text)));
+
+    const byUid = (book) => new Map(book.map((e) => [e.uid, e]));
+    const b = byUid(before);
+    const a = byUid(after);
+    const changed = [...new Set([...b.keys(), ...a.keys()])].filter((u) => !b.has(u) || !a.has(u) || !same(b.get(u).raw, a.get(u).raw));
+    const offenders = [];
+    for (const u of changed) {
+        const prev = b.get(u);
+        const next = a.get(u);
+        if (prev?.pinned) offenders.push({ uid: u, title: prev.title, problem: 'pinned entry changed' });
+        else if (!((prev && inScene(prev)) || (next && inScene(next)))) offenders.push({ uid: u, title: (prev ?? next).title, problem: 'changed, but not part of the edited scene' });
+    }
+    if (!changed.length) return result('E9', name, false, { reason: 'the edit changed nothing', scene: [from, to] });
+    return result('E9', name, offenders.length === 0, { scene: [from, to], changed, offenders });
 }
 
 // ── answer key helpers ───────────────────────────────────────────────────────

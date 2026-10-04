@@ -2,7 +2,7 @@
 // or malformed. The gate treats that as a hard failure (exit 2): a harness
 // with nothing to check must never report green.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export class FixtureError extends Error {}
@@ -89,4 +89,21 @@ export function loadRun(dir) {
         rerun: loadBook(join(dir, 'rerun.json')),
         boundaries: scenes.boundaries,
     };
+}
+
+/**
+ * Edit fixtures: `<story>/edits/<name>/transcript.jsonl`, the story with one
+ * scene edited. A run answers each with `<run>/edits/<name>/book.json`, its
+ * book.json brought up to date with the edited transcript.
+ */
+export function loadEdits(storyDir, runDir) {
+    const root = join(storyDir, 'edits');
+    if (!existsSync(root)) throw new FixtureError(`no edit fixtures: ${root}`);
+    const names = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    if (!names.length) throw new FixtureError(`no edit fixtures: ${root}`);
+    return names.map((name) => ({
+        name,
+        transcript: loadTranscript(join(root, name, 'transcript.jsonl')),
+        book: loadBook(join(runDir, 'edits', name, 'book.json')),
+    }));
 }

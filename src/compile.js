@@ -69,22 +69,36 @@ function mergeByName(entities) {
 /**
  * Compiles entities into entries.
  *
- * `pinned` are existing entries a human pinned. They are kept verbatim and
- * their keys are claimed first: pins win every contest.
+ * `pinned` are existing entries kept verbatim: human-pinned, edited by hand,
+ * or not Canonkeeper's at all. Their keys are claimed first, so they win
+ * every contest, and an entity with the same title is held behind them.
  *
- * Returns { entries, ledger, review, contested } where `ledger` records, per entity,
- * every key decision with its reason.
+ * `uids` maps a folded entity name to the uid it had last time, so an entity
+ * keeps its entry across runs. New entities get uids from `nextUid` up, in
+ * story order; a retired uid is never handed out again.
+ *
+ * Returns { entries, ledger, review, contested, nextUid }. `ledger` has one
+ * record per entity, shipped or not: the entity as the model gave it (the
+ * canon a later run starts from) plus `uid` and `compiled`, every key
+ * decision with its reason.
  */
-export function compile(entities, messages, { pinned = [] } = {}) {
+export function compile(entities, messages, { pinned = [], uids = new Map(), nextUid = 0 } = {}) {
     const review = [];
     const maxFires = Math.floor(messages.length * MAX_FIRE_FRACTION);
 
     // 1. Per-entity key candidates: verbatim in the story, case decided, not overbroad.
-    const pinnedNames = new Set(pinned.map((p) => fold(p.comment ?? '')));
-    const candidates = mergeByName(entities)
+    // A kept entry holds the entity with its title, or with its uid (a human
+    // may have renamed it).
+    const pinnedUid = new Map(pinned.map((p) => [fold(p.comment ?? ''), p.uid]));
+    const keptUids = new Set(pinned.map((p) => p.uid));
+    for (const [name, uid] of uids) if (keptUids.has(uid) && !pinnedUid.has(name)) pinnedUid.set(name, uid);
+    const merged = mergeByName(entities);
+    const held = [];
+    const candidates = merged
         .filter((e) => {
-            if (!pinnedNames.has(fold(e.name))) return true;
-            review.push({ name: e.name, reason: 'a human-pinned entry already covers this name; kept the pinned entry' });
+            if (!pinnedUid.has(fold(e.name))) return true;
+            held.push(e);
+            review.push({ name: e.name, reason: 'a pinned or hand-edited entry covers this name; kept that entry' });
             return false;
         })
         .map((e) => {
@@ -147,8 +161,10 @@ export function compile(entities, messages, { pinned = [] } = {}) {
 
     // 3. Ship only what can fire, with provenance that names the entity.
     const shipped = [];
+    const unshipped = [];
     for (const c of candidates) {
         if (!c.keys.length) {
+            unshipped.push(c);
             review.push({ name: c.name, reason: 'no usable key left', dropped: c.dropped });
             continue;
         }
@@ -162,20 +178,36 @@ export function compile(entities, messages, { pinned = [] } = {}) {
         shipped.push({ ...c, sources, anchor, first: sources[0][0] });
     }
 
-    // 4. Stable order and uids: story order, then name. Pinned uids are never reused.
+    // 4. Stable uids: an entity keeps the uid it had; new ones follow in story
+    //    order, then name. Uids of kept entries are never reused.
     shipped.sort((a, b) => a.first - b.first || a.name.localeCompare(b.name));
     const taken = new Set(pinned.map((p) => p.uid));
-    let next = 0;
-    const entries = pinned.map((p) => structuredClone(p));
-    const ledger = [];
     for (const c of shipped) {
-        while (taken.has(next)) next++;
-        const uid = next++;
-        entries.push(toEntry(uid, c));
-        ledger.push({ uid, name: c.name, keys: c.keys, dropped: c.dropped, caseSensitive: c.caseSensitive, cascade: c.cascade, throttle: c.throttle, facts: c.facts, anchor: c.anchor });
+        const uid = uids.get(fold(c.name));
+        if (uid != null && !taken.has(uid)) taken.add((c.uid = uid));
     }
+    let next = nextUid;
+    for (const c of shipped) {
+        if (c.uid != null) continue;
+        while (taken.has(next)) next++;
+        taken.add((c.uid = next++));
+    }
+    const entries = [...pinned.map((p) => structuredClone(p)), ...shipped.map((c) => toEntry(c.uid, c))];
     entries.sort((a, b) => a.uid - b.uid);
-    return { entries, ledger, review, contested };
+
+    // 5. The ledger: every entity, as the model gave it, with what became of it.
+    const canon = new Map(merged.map((e) => [fold(e.name), e]));
+    const record = (name, uid, compiled) => {
+        const e = canon.get(fold(name));
+        return { name: e.name, keys: e.keys, facts: e.facts, caseSensitive: e.caseSensitive, cascade: e.cascade, throttle: e.throttle, uid, compiled };
+    };
+    const ledger = [
+        ...shipped.map((c) => record(c.name, c.uid, { keys: c.keys, caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: c.anchor })),
+        ...held.map((e) => record(e.name, pinnedUid.get(fold(e.name)), null)),
+        ...unshipped.map((c) => record(c.name, null, { keys: [], caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: null })),
+    ];
+    const maxUid = Math.max(nextUid - 1, ...[...taken].filter(Number.isInteger));
+    return { entries, ledger, review, contested, nextUid: maxUid + 1 };
 }
 
 /** The full SillyTavern entry. The model never writes any of these fields. */

@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 import { parseTranscript } from '../src/transcript.js';
-import { build, rerun } from '../src/build.js';
+import { build } from '../src/build.js';
+import { update } from '../src/update.js';
 import { compile, toRanges } from '../src/compile.js';
 import { readReply, ModelOutputError } from '../src/parse.js';
 import { TooLongError } from '../src/budget.js';
@@ -102,7 +103,7 @@ test('a case-sensitive "the X" key also matches "The X" at the start of a senten
 test('a key the story never uses is dropped', () => {
     const { entries, ledger } = compile([ent('Tamsin Dray', ['Tamsin', 'the Courier Queen'], [2])], messages);
     assert.deepEqual([...entries[0].key].sort(), ['Tamsin', 'Tamsin Dray']);
-    assert.match(ledger[0].dropped[0].reason, /not in the transcript/);
+    assert.match(ledger[0].compiled.dropped[0].reason, /not in the transcript/);
 });
 
 test('a key that fires on nearly every message is dropped', () => {
@@ -153,30 +154,7 @@ test('a story that does not fit the window is refused before any model call', as
     assert.equal(called, false);
 });
 
-// ── re-running ──────────────────────────────────────────────────────────────
-
-test('an unchanged transcript re-runs with zero writes and no model call', async () => {
-    const first = await build({ messages, generate: replay(recorded), contextTokens: 200000 });
-    first.book.entries['0'].canonkeeper.pinned = true;
-    const again = await rerun({ book: first.book, ledger: first.ledger, messages, generate: replay([]), contextTokens: 200000 });
-    assert.equal(again.wrote, false);
-    assert.deepEqual(again.book, first.book);
-});
-
-test('a changed transcript rebuilds, and a pinned entry keeps its uid, text and keys', async () => {
-    const first = await build({ messages, generate: replay(recorded), contextTokens: 200000 });
-    const saul = Object.values(first.book.entries).find((e) => e.comment === 'Brother Saul');
-    saul.canonkeeper.pinned = true;
-    saul.content = 'Edited by a human.';
-    const pinnedBefore = structuredClone(saul);
-    const edited = messages.map((m) => (m.id === 80 ? { ...m, text: m.text + ' The end.' } : m));
-    assert.notEqual(fingerprint(edited), first.ledger.fingerprint);
-    const again = await rerun({ book: first.book, ledger: first.ledger, messages: edited, generate: replay(recorded), contextTokens: 200000 });
-    assert.equal(again.wrote, true);
-    assert.deepEqual(again.book.entries[String(saul.uid)], pinnedBefore);
-    const sauls = Object.values(again.book.entries).filter((e) => e.comment === 'Brother Saul');
-    assert.equal(sauls.length, 1);
-});
+// ── pins (re-runs are in update.test.js) ───────────────────────────────────
 
 test('a pinned entry wins a key contest', () => {
     const pin = { uid: 7, comment: 'Mora Quill', key: ['Quill'], content: 'x', canonkeeper: { pinned: true, sources: [[2, 2]] } };
@@ -191,7 +169,7 @@ test('the builder on the recorded reply passes the whole gate', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'canonkeeper-'));
     const first = await build({ messages, generate: replay(recorded), contextTokens: 200000 });
     Object.values(first.book.entries).find((e) => e.comment === 'Brother Saul').canonkeeper.pinned = true;
-    const again = await rerun({ book: first.book, ledger: first.ledger, messages, generate: replay([]), contextTokens: 200000 });
+    const again = await update({ book: first.book, ledger: first.ledger, messages, generate: replay([]), contextTokens: 200000 });
     writeFileSync(join(dir, 'book.json'), JSON.stringify(first.book));
     writeFileSync(join(dir, 'rerun.json'), JSON.stringify(again.book));
     writeFileSync(join(dir, 'scenes.json'), JSON.stringify(first.scenes));

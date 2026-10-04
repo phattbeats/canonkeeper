@@ -9,11 +9,13 @@ import { planBudget, estimateTokens, TooLongError } from './budget.js';
 import { buildPrompt, retryPrompt } from './prompt.js';
 import { readReply, ModelOutputError } from './parse.js';
 import { compile } from './compile.js';
-import { fingerprint } from './fingerprint.js';
+import { fingerprint, messageHash } from './fingerprint.js';
+import { entryHash } from './plan.js';
 
-export const LEDGER_VERSION = 1;
+/** v2: the ledger holds the canon, message hashes and written-entry hashes. */
+export const LEDGER_VERSION = 2;
 
-async function ask(generate, prompt, maxTokens, messageCount) {
+export async function ask(generate, prompt, maxTokens, messageCount) {
     const first = await generate({ ...prompt, maxTokens });
     try {
         return readReply(first, messageCount);
@@ -31,13 +33,43 @@ export function toBook(entries) {
 }
 
 /**
+ * The ledger: the per-chat state a later run starts from. The lorebook is
+ * output; this is the record. `revision` counts the runs that wrote.
+ */
+export function makeLedger({ messages, budget, scenes, compiled, review, revision, held = [], previous = {} }) {
+    const heldUids = new Set(held.map((e) => String(e.uid)));
+    const written = {};
+    for (const e of compiled.entries) {
+        const uid = String(e.uid);
+        if (!heldUids.has(uid)) written[uid] = entryHash(e);
+        else if (uid in previous) written[uid] = previous[uid];
+    }
+    return {
+        version: LEDGER_VERSION,
+        revision,
+        fingerprint: fingerprint(messages),
+        messageCount: messages.length,
+        hashes: messages.map(messageHash),
+        budget,
+        scenes,
+        entities: compiled.ledger,
+        nextUid: compiled.nextUid,
+        written,
+        contested: compiled.contested,
+        review,
+    };
+}
+
+/**
  * Builds the whole book in one call.
  *
  * Returns { book, scenes, ledger }: `book` is a SillyTavern World Info file,
  * `scenes` the ids that start a new scene, and `ledger` the state a later run
  * starts from (what was built, from which text, and every decision made).
+ * `pinned` entries are kept verbatim; `uids` and `nextUid` keep entities on
+ * the uids they had (see compile).
  */
-export async function build({ messages, generate, contextTokens, maxOutputTokens, pinned = [] }) {
+export async function build({ messages, generate, contextTokens, maxOutputTokens, pinned = [], uids, nextUid }) {
     if (!messages.length) throw new Error('empty transcript');
     const budget = planBudget({ contextTokens, maxOutputTokens });
     const prompt = buildPrompt(messages, budget.output);
@@ -45,34 +77,18 @@ export async function build({ messages, generate, contextTokens, maxOutputTokens
     if (needed > budget.input) throw new TooLongError(needed, budget.input);
 
     const reply = await ask(generate, prompt, budget.output, messages.length);
-    const { entries, ledger, review, contested } = compile(reply.entities, messages, { pinned });
+    const compiled = compile(reply.entities, messages, { pinned, uids, nextUid });
     return {
-        book: toBook(entries),
+        book: toBook(compiled.entries),
         scenes: { boundaries: reply.scenes },
-        ledger: {
-            version: LEDGER_VERSION,
-            fingerprint: fingerprint(messages),
-            messageCount: messages.length,
+        ledger: makeLedger({
+            messages,
             budget: { ...budget, promptEstimate: needed },
             scenes: reply.scenes,
-            entities: ledger,
-            contested,
-            review: [...reply.review, ...review],
-        },
+            compiled,
+            review: [...reply.review, ...compiled.review],
+            revision: 1,
+            held: pinned,
+        }),
     };
-}
-
-/**
- * Re-running a book. An unchanged transcript writes nothing: the book comes
- * back exactly as it went in, pins and human edits included, with no model
- * call. A changed transcript is rebuilt with every pinned entry kept as is
- * (build step 2 replaces this with an incremental update).
- */
-export async function rerun({ book, ledger, messages, generate, contextTokens, maxOutputTokens }) {
-    if (ledger?.version === LEDGER_VERSION && ledger.fingerprint === fingerprint(messages)) {
-        return { book: structuredClone(book), ledger, wrote: false };
-    }
-    const pinned = Object.values(book.entries).filter((e) => e.canonkeeper?.pinned);
-    const next = await build({ messages, generate, contextTokens, maxOutputTokens, pinned });
-    return { ...next, wrote: true };
 }
