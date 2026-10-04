@@ -33,8 +33,12 @@ import { update } from './update.js';
 export const AUDIT_VERSION = 1;
 /** Rough reply cost of one claim's verdict. */
 const TOKENS_PER_VERDICT = 80;
-/** Verification's own output cap: verdicts are short. */
-const VERIFY_OUTPUT = 8000;
+/**
+ * Verification's own output cap. Verdicts are short, but a host may turn on
+ * thinking (SillyTavern does for Claude) and spend the cap before the reply:
+ * at 8000, every reply through SillyTavern came back empty or cut off.
+ */
+const VERIFY_OUTPUT = 32000;
 
 const fold = (s) => s.toLowerCase();
 const keysOf = (e) => (Array.isArray(e.key) ? e.key : []).map((k) => String(k).trim()).filter(Boolean);

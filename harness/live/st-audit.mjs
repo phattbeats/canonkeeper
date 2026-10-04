@@ -295,8 +295,11 @@ async function main() {
     // 6. Damage the book as a user might: delete one entry in the World Info
     //    editor, and give two entries the same key (through SillyTavern's own
     //    World Info save, which the editor uses).
-    const gone = titled(built, PLANT.delete);
-    if (!gone) throw new Error(`the built book has no '${PLANT.delete}' to delete`);
+    // A live build words its own book: if it has no entry by the plant's
+    // title, the last entry outside the collision is deleted instead.
+    const gone = titled(built, PLANT.delete)
+        ?? Object.values(built.entries).filter((e) => !PLANT.collision.entries.includes(e.comment)).sort((a, b) => b.uid - a.uid)[0];
+    if (gone.comment !== PLANT.delete) log(`[setup] the built book has no '${PLANT.delete}'; deleting '${gone.comment}' instead`);
     await deleteInEditor(page, name, gone.uid);
     let now = await readBook(name);
     if (String(gone.uid) in now.entries) throw new Error(`entry uid ${gone.uid} is still in the lorebook file after deleting it in the editor`);
