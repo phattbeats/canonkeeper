@@ -163,6 +163,28 @@ In SillyTavern, type `/canon-audit` or press **Audit** in the panel. The status 
 
 The technical pass caught the collision and the deletion every time, and found nothing on the clean book. Sonnet flags more. Most of its flags are real mis-citations, a fact citing the message before or after the one that says it. Some are pedantic. Haiku flagged none of those, so the cheap model is the default here too. Before the reply put its reasoning ahead of the verdict, Sonnet sometimes argued itself to "supported" and still answered "unsupported".
 
+### The live audit run (`harness/live/st-audit.mjs`)
+
+This drives a fresh SillyTavern through a real browser. It installs the extension from the repo URL and makes two connection profiles: the writer (claude-sonnet-5) and the claim checker (claude-haiku-4-5). It types `/canon`, then `/canon-audit` on the book as built. Then it damages the book as a user might. It deletes The Harbor Fire in SillyTavern's own World Info editor (delete button, confirm dialog), and adds "Captain" to Mora Quill and Oren Hale through SillyTavern's World Info save. It types `/canon-audit` again, then `/canon`. It accepts both fixes by clicking their **Accept** buttons in the status view, and finishes with a technical-only audit. Every check reads SillyTavern's HTTP API from outside the page. It writes `audit.log`, screenshots and an audit run directory, then gates it with `--audit`. Live builds word their own books, so false facts are planted only in the CI run.
+
+On 2026-10-04 it ran against SillyTavern 1.19.0 at commit 3d49a64:
+
+- **The book as built:** no technical finding. 47 of 48 claims were verified, and 3 were flagged unsupported. All 3 are claims that go beyond their cited messages, such as a fact citing #34 and #44 for a Tuesday-night detail from #4.
+- **After the damage:** both plants were caught. The collision on "Captain" was an error with a fix, and the deleted entry was a warning with a restore. The lorebook file was byte-identical after the audit.
+- **`/canon` on the damaged book:** zero writes, the two edited entries held, and The Harbor Fire still deleted.
+- **The accepted fixes:** The Harbor Fire came back on its old uid, and "Captain" came off both entries.
+- **The gate:** A12 and A13 green.
+
+Two live-only bugs came up on the way.
+
+- **The output cap.** SillyTavern turns on thinking for Claude, so at an 8,000-token output cap every claim-check reply came back empty or cut off, and every claim stayed unchecked. The audit reported "0 of 50 claims verified" rather than a pass. The cap is now 32,000.
+- **The driver.** It clicked Install 100 ms after typing the URL, and the install never reached the server.
+
+```bash
+ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0.1:8000 \
+BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-audit.mjs
+```
+
 Before step 6, `/canon` silently added a deleted entry back. The re-run in `build:audit` now makes zero writes, and A12 checks that the entry stays deleted.
 
 ## Re-runs (`src/update.js`, `src/plan.js`, `src/align.js`)

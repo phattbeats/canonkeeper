@@ -9,4 +9,4 @@
 .canonkeeper .canonkeeper-entry input { flex: none; margin: 0; }
 .canonkeeper .canonkeeper-finding { border-left: 3px solid #e6a23c; padding: 2px 0 2px 6px; margin: 4px 0; }
 .canonkeeper .canonkeeper-finding.canonkeeper-error { border-left-color: #e66; color: inherit; }
-.canonkeeper .canonkeeper-finding .menu_button { font-size: 0.85em; padding: 2px 6px; }
+.canonkeeper .canonkeeper-finding .menu_button { font-size: 0.85em; padding: 2px 6px; width: auto; flex: 0 1 auto; white-space: normal; }
