@@ -98,7 +98,7 @@ How the adapter works:
 
 ### The live acceptance run (`harness/live/st-live.mjs`)
 
-This drives a fresh SillyTavern through a real browser, as a user would. It installs the extension from the repo URL, makes a connection profile, picks it in the panel, opens the fixture chat and types `/canon`. Then it pins two entries in the status view and types `/canon` again. Every check reads SillyTavern's HTTP API from outside the page: the extension on disk, the lorebook file and the run record in the chat file. Nothing relies on the page reporting its own success. It writes `live.log`, screenshots and a run directory, then gates that run directory.
+This drives a fresh SillyTavern through a real browser, as a user would. It installs the extension from the repo URL, makes a connection profile, picks it in the panel, opens the fixture chat and types `/canon`. Then it pins two entries in the status view and types `/canon` again. Every check reads SillyTavern's HTTP API from outside the page: the extension on disk, the lorebook file and the run record in the chat file. Nothing relies on the page reporting its own success. It writes `live.log`, screenshots and a run directory, then gates that run directory. With `CONTEXT=20000 OUTPUT_SHARE=0.65` the fixture story doesn't fit the window, so `/canon` builds it in parts, and the gate runs with `--chunked`. `OUTPUT_SHARE` has no control in the panel, so the driver sets it in the extension's settings. The output needs that much room because SillyTavern turns on thinking for claude-5 models, and with a 5k cap the thinking used up the reply.
 
 ```bash
 npm i --no-save playwright-core
