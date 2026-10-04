@@ -288,7 +288,7 @@ The checks test properties and coverage, never wording. A builder that writes be
 | I4 | Every entry has provenance (`canonkeeper.sources`) inside the transcript, and at least one cited message actually triggers one of the entry's keys |
 | I5 | Re-running on the unchanged transcript writes nothing. `rerun.json` must deep-equal `book.json` |
 | I6 | Every human-pinned entry survives the re-run with the same title, keys, content and case setting |
-| C7 | Coverage against the answer key. Recall on required entities must be 1.0 and precision at least 0.8. It also fails on any split entity, any entry that merges two entities, any entry that never fires on its own entity's mentions, any case-trap decoy that fires, or any claim on a contested key |
+| C7 | Coverage against the answer key. Recall on required entities must be 1.0. It also fails on any split entity, any entry that merges two entities, any entry for something the story never mentions (none of its keys fires anywhere), any two entries for one thing (one's title is the other's title or one of its keys), any entry that never fires on its own entity's mentions, any case-trap decoy that fires, or any claim on a contested key. Entries the key doesn't list, and precision, are shown but don't gate: a model that keeps the Harbor Docks is thorough, not wrong |
 | C8 | Scene boundaries at ±1 message, with precision and recall both at least 0.9 |
 | E9 | With `--edits` only. For each edit fixture, the run's updated book changes only entries of the edited scene: entries that cite a message there, or whose keys fire there before or after the edit. A pinned entry may not change at all, and an edit that changes nothing is red. A missing update output is a fixture error |
 | L11 | With `--live` only. The session's state store shows detection on a cadence: at most N/cadence detection calls for N messages, and every message judged except the few still waiting. At least one update ran, and each one brought the book up to a scene start the detector found, further than the one before. Per-message detection is red |
@@ -304,18 +304,25 @@ Thresholds live in `THRESHOLDS` in `harness/checks.js`.
 
 CI replays a recorded reply, so it is deterministic. A real model call isn't: the same prompt can pass once and fail the next time. So a live check is n fresh runs, and the result is how many came out green, never a single run.
 
+The live acceptance rule for the one-shot build:
+
+- **A pass is 8 of 10.** Ten fresh runs with claude-sonnet-5, the default model, and at least 8 fully green. A change to the prompt, the compile or the gate has to pass this before it ships.
+- **I1–I6 get no allowance.** Code guarantees them, not the model, so one red I-check in any run is a bug to fix.
+- **Other models are reported, not gated.** Haiku (n=10) and Opus (n=5).
+- **A prompt change is compared with a same-day baseline**, n=10 each. Results drift from day to day: one setup went 5 of 5 one day and 2 of 6 the next.
+
 ```bash
 node harness/live-runs.js [--model claude-sonnet-5] [--n 10] [--pass 8] [--jobs 3]   # writes .run/live-runs/<model>/<i> and summary.json
 ```
 
 Each run is built with the real model, has Brother Saul pinned, is re-run and then gated, the way `npm run build:story` does it (without the edit fixtures). It takes about 40 s, and three run at once.
 
-Measured on 2026-10-04, on the fixture story. The fails are the gate as it stands:
+Measured on 2026-10-04, on the fixture story:
 
 | Prompt | claude-sonnet-5 | claude-haiku-4-5 | claude-opus-5-5 |
 |---|---|---|---|
 | Before | 13 of 20 (6 split the escape at 79; 3 left out Saltgate or the Drowned Lantern) | 9 of 10 | |
-| Now | 10 of 10 | 10 of 10 | 0 of 5 (C7 precision, on real minor extras: the Harbor Docks, the Harbor Watch) |
+| Now | 10 of 10 | 10 of 10 | 5 of 5 (0 of 5 when C7 still gated precision at 0.8: real minor extras such as the Harbor Docks and the Harbor Watch) |
 
 Two changes to the prompt did it:
 

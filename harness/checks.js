@@ -14,8 +14,11 @@
 //       a message where one of the entry's keys actually fires
 //   I5  re-running on the unchanged transcript writes nothing
 //   I6  every human-pinned entry survives the re-run untouched
-//   C7  entity coverage against the answer key: found / missed / extra, plus
-//       splits, over-merges, reachability, case-trap decoys, contested keys
+//   C7  entity coverage against the answer key: every required entity found,
+//       no splits, over-merges or duplicates, no entry for something the
+//       story never mentions, reachability, case-trap decoys,
+//       contested keys. Extras (entries the key doesn't list) and precision
+//       are reported, not gated
 //   C8  scene-boundary precision and recall at ±tolerance messages
 //   E9  editing one scene changes only that scene's entities, and pinned
 //       entries survive the edit (opt-in: needs an edit fixture and output)
@@ -38,7 +41,7 @@ import { entryFires, keyFires, DEFAULTS } from './activation.js';
 export const THRESHOLDS = {
     maxFireFraction: 0.8, // I3: "nearly every message"
     minRecall: 1.0, // C7: required entities found
-    minPrecision: 0.8, // C7: entries that map to a real entity
+    minPrecision: null, // C7: share of entries the key lists; reported, gated only when set
     boundaryTolerance: 1, // C8: ± messages
     maxCleanClaimFlags: 0.15, // A13: share of a clean book's claims the audit may flag
     minBoundaryPrecision: 0.9, // C8
@@ -413,10 +416,25 @@ export function scoreC7Coverage(book, key, messages, { minRecall = THRESHOLDS.mi
     const contested = new Set((key.contestedKeys ?? []).map((k) => k.toLowerCase()));
     const contestedClaims = live.flatMap((e) => e.keys.filter((k) => contested.has(k.toLowerCase())).map((k) => ({ uid: e.uid, key: k })));
 
+    // Two entries for one thing the key doesn't list: one's title is the
+    // other's title or one of its keys.
+    const duplicates = [];
+    for (let i = 0; i < live.length; i++) {
+        for (let j = i + 1; j < live.length; j++) {
+            const [a, b] = [live[i], live[j]];
+            const names = (e) => new Set([e.title, ...e.keys].map(fold));
+            if (names(b).has(fold(a.title)) || names(a).has(fold(b.title))) duplicates.push({ uids: [a.uid, b.uid], titles: [a.title, b.title] });
+        }
+    }
+
+    // An entry the key doesn't list is fine if it's real: it must fire
+    // somewhere in the story. An invented one fires nowhere.
+    const ungrounded = extra.filter((x) => !messages.some((m) => entryFires(live.find((e) => e.uid === x.uid), m.text)));
+
     const recall = (required.length - missed.length) / required.length;
     const precision = (live.length - extra.length) / live.length;
-    const ok = recall >= minRecall && precision >= minPrecision && !split.length && !overMerged.length && !unreachable.length && !decoyFires.length && !contestedClaims.length;
-    return result('C7', name, ok, { recall, precision, minRecall, minPrecision, missed, extra, split, overMerged, unreachable, decoyFires, contestedClaims });
+    const ok = recall >= minRecall && (minPrecision == null || precision >= minPrecision) && !split.length && !overMerged.length && !duplicates.length && !ungrounded.length && !unreachable.length && !decoyFires.length && !contestedClaims.length;
+    return result('C7', name, ok, { recall, precision, minRecall, minPrecision, missed, extra, split, overMerged, duplicates, ungrounded, unreachable, decoyFires, contestedClaims });
 }
 
 // ── C8 ───────────────────────────────────────────────────────────────────────

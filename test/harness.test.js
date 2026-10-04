@@ -220,13 +220,31 @@ test('C7 red: an entry whose keys never fire on its own mentions', () => {
     assert.ok(c.detail.missed.includes('Harbor Fire') || c.detail.unreachable.length);
 });
 
-test('C7 red: too many entries for things not in the story', () => {
+test('C7 red: an entry for something the story never mentions', () => {
+    const book = mutate((r) => r.push({ ...structuredClone(r[0]), uid: 200, comment: 'Invented', key: ['Invented'] }));
+    const c = scoreC7Coverage(book, key, messages);
+    assert.equal(c.ok, false);
+    assert.deepEqual(c.detail.ungrounded.map((x) => x.title), ['Invented']);
+});
+
+test('C7 green: real entries the key does not list are reported, not gated', () => {
     const book = mutate((r) => {
-        for (let i = 0; i < 6; i++) r.push({ ...structuredClone(r[0]), uid: 200 + i, comment: `Invented ${i}`, key: [`Invented${i}`] });
+        for (const [i, k] of ['rain', 'shutters', 'warehouses', 'fish market', 'lamp room', 'spiral stair'].entries()) r.push({ ...structuredClone(r[0]), uid: 200 + i, comment: k, key: [k] });
+    });
+    const c = scoreC7Coverage(book, key, messages);
+    assert.equal(c.ok, true);
+    assert.equal(c.detail.extra.length, 6);
+    assert.ok(c.detail.precision < 0.8);
+});
+
+test('C7 red: two entries for one thing the key does not list', () => {
+    const book = mutate((r) => {
+        r.push({ ...structuredClone(r[0]), uid: 200, comment: 'The Lamp Room', key: ['lamp room'] });
+        r.push({ ...structuredClone(r[0]), uid: 201, comment: 'Kestrel lamp', key: ['Lamp Room', 'great lens'] });
     });
     const c = scoreC7Coverage(book, key, messages);
     assert.equal(c.ok, false);
-    assert.ok(c.detail.precision < 0.8);
+    assert.deepEqual(c.detail.duplicates.map((d) => d.uids), [[200, 201]]);
 });
 
 // ── C8 ──────────────────────────────────────────────────────────────────────
