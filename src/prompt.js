@@ -5,7 +5,7 @@
 const RULES = `Rules:
 - Use only what the transcript states. Never invent detail. If something is unclear, leave it out.
 - One entry per real entity. If a character is first known by an epithet or title ("the cartographer") and later named, that is one entity under its name, with the epithet as a key. Never split one entity across two entries, and never merge two entities into one.
-- Include an entity when the story would suffer from forgetting it: every named character who speaks or acts in a scene, however minor; every named place a scene is set in or that the plot turns on; important objects; named events and turning points the characters refer back to (a fire, a deal, a battle, an arrival), even when the story never gives them a formal name; groups and factions; and the plot threads the story keeps returning to (a prophecy, a mystery, a relationship, a council or reform), under the phrase the story uses for them. Skip unnamed passers-by.
+- Include an entity when the story would suffer from forgetting it: every named character who speaks or acts in a scene, however minor; every named place a scene is set in or that the plot turns on, including the town or city the story is set in and any place a narrator header names; important objects; named events and turning points the characters refer back to (a fire, a deal, a battle, an arrival), even when the story never gives them a formal name; groups and factions; and the plot threads the story keeps returning to (a prophecy, a mystery, a relationship, a council or reform), under the phrase the story uses for them. Skip unnamed passers-by.
 - Return only the JSON object. No prose, no code fences.`;
 
 export const SYSTEM = `You build a lorebook for a roleplay story. You read the whole transcript and report two things as JSON: where scenes start, and the entities the story needs to remember.\n\n${RULES}`;
@@ -13,7 +13,7 @@ export const SYSTEM = `You build a lorebook for a roleplay story. You read the w
 export const UPDATE_SYSTEM = `You keep a roleplay story's lorebook up to date. You read the passages of the transcript that are new or have changed and report two things as JSON: where scenes start in them, and what they establish about the entities the story needs to remember.\n\n${RULES}`;
 
 export const SHAPE = `{
-  "scenes": [ { "start": <message id where the scene begins>, "title": "<short label>" } ],
+  "scenes": [ { "cut": "<what the story skips here>", "start": <message id where the scene begins>, "title": "<short label>" } ],
   "entities": [
     {
       "name": "<the entity's fullest proper name as the story gives it>",
@@ -27,7 +27,7 @@ export const SHAPE = `{
 }`;
 
 export const FIELD_GUIDE = `Fields:
-- scenes: every point where the story cuts to a new scene: a jump in time, or a jump to a different place or situation. The first scene starts at 0. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. Continuous action is one scene even when the characters move from room to room or out of a building; only a cut starts a new one.
+- scenes: every point where the story cuts to a new scene: a jump in time, or a jump to a different place or situation. The first scene starts at 0. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. A message that picks up where the previous one left off (the same people carrying on what they were doing, with no time skipped) continues the scene, even when they move somewhere else: room to room, out of a building, down a tunnel, onto a boat. Only a cut starts a new one. For each scene after the first, first say in cut what the story skips there: time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header that opens a new scene. If you can't name one, it isn't a new scene; leave it out.
 - name: the full name, e.g. "Captain Ada Marsh" -> "Ada Marsh".
 - keys: the exact strings the story uses for this entity: full name, short name, and any epithet or title used in place of the name, never a pronoun. A key names the entity itself, never something of its ("the captain's cabin" is a place, not a key for the captain). Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
 - facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. 1-5 facts of one short sentence each: be brief, so that every entity fits.

@@ -263,6 +263,7 @@ node harness/gate.js --run <run-dir> --chunked   # a run on a window too small f
 node harness/gate.js --run <run-dir> --live      # a live session (harness/live-sim.js, st-session.mjs)
 node harness/gate.js --run <audit-dir> --audit   # an audit run (npm run build:audit, st-audit.mjs)
 npm run build:audit                              # build, audit, plant, audit again, re-run, then gate --audit
+node harness/live-runs.js --model <id> --n 10     # n live one-shot builds, each gated, then a tally (below)
 ```
 
 With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's bar for a chunked run is I1–I6 plus K10, so C7 and C8 are scored and shown as `INFO` but don't gate it.
@@ -298,6 +299,30 @@ The checks test properties and coverage, never wording. A builder that writes be
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
 
 Thresholds live in `THRESHOLDS` in `harness/checks.js`.
+
+### Live runs of the one-shot build (`harness/live-runs.js`)
+
+CI replays a recorded reply, so it is deterministic. A real model call isn't: the same prompt can pass once and fail the next time. So a live check is n fresh runs, and the result is how many came out green, never a single run.
+
+```bash
+node harness/live-runs.js [--model claude-sonnet-5] [--n 10] [--pass 8] [--jobs 3]   # writes .run/live-runs/<model>/<i> and summary.json
+```
+
+Each run is built with the real model, has Brother Saul pinned, is re-run and then gated, the way `npm run build:story` does it (without the edit fixtures). It takes about 40 s, and three run at once.
+
+Measured on 2026-10-04, on the fixture story. The fails are the gate as it stands:
+
+| Prompt | claude-sonnet-5 | claude-haiku-4-5 | claude-opus-5-5 |
+|---|---|---|---|
+| Before | 13 of 20 (6 split the escape at 79; 3 left out Saltgate or the Drowned Lantern) | 9 of 10 | |
+| Now | 10 of 10 | 10 of 10 | 0 of 5 (C7 precision, on real minor extras: the Harbor Docks, the Harbor Watch) |
+
+Two changes to the prompt did it:
+
+- **Every scene start names its cut.** Each scene in the reply carries `cut`, written before its `start`: what the story skips there (time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header). If the model can't name one, there's no new scene. Rewording the scene rule alone did nothing (5 of 10). With `cut` in place, Sonnet stopped splitting the escape. Leaving the narrator header off the list made Opus merge the scene at 10 into the first one, 0 of 5. Its cellar hatch "opens onto" the quay, so the cut there is the header.
+- **Setting places are named.** The places to include now say "including the town or city the story is set in and any place a narrator header names". Sonnet stopped leaving out Saltgate.
+
+Magisa, one-shot Sonnet: 36 and 41 of 52 with the new prompt, inside the 36–44 it scored before.
 
 ## Fixtures (`fixtures/story/`)
 
