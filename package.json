@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node --test",
     "gate": "node harness/gate.js --story fixtures/story --run fixtures/story/reference",
-    "build:story": "node bin/canonkeeper.js build fixtures/story/transcript.jsonl --out .run/story --replay fixtures/story/recorded/replies.json && node bin/canonkeeper.js pin .run/story 'Brother Saul' && node bin/canonkeeper.js pin .run/story 'The Undercroft' && node bin/canonkeeper.js rerun fixtures/story/transcript.jsonl --run .run/story && node bin/canonkeeper.js update fixtures/story/edits/undercroft/transcript.jsonl --run .run/story --out .run/story/edits/undercroft --replay fixtures/story/edits/undercroft/replies.json && node harness/gate.js --story fixtures/story --run .run/story --edits"
+    "build:story": "node bin/canonkeeper.js build fixtures/story/transcript.jsonl --out .run/story --replay fixtures/story/recorded/replies.json && node bin/canonkeeper.js pin .run/story 'Brother Saul' && node bin/canonkeeper.js pin .run/story 'The Undercroft' && node bin/canonkeeper.js rerun fixtures/story/transcript.jsonl --run .run/story && node bin/canonkeeper.js update fixtures/story/edits/undercroft/transcript.jsonl --run .run/story --out .run/story/edits/undercroft --replay fixtures/story/edits/undercroft/replies.json && node harness/gate.js --story fixtures/story --run .run/story --edits",
+    "build:chunked": "node bin/canonkeeper.js build fixtures/story/transcript.jsonl --out .run/chunked --context 10000 --output-share 0.5 --replay fixtures/story/chunked/replies.json && node bin/canonkeeper.js pin .run/chunked 'Brother Saul' && node bin/canonkeeper.js rerun fixtures/story/transcript.jsonl --run .run/chunked --context 10000 --output-share 0.5 && node harness/gate.js --story fixtures/story --run .run/chunked --chunked"
   },
   "bin": {
     "canonkeeper": "bin/canonkeeper.js"

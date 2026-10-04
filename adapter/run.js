@@ -73,7 +73,9 @@ function summarize(result, bookName) {
     const writes = result.plan.length
         ? `${result.plan.length} writes (${Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')})`
         : 'no writes';
-    return `Canonkeeper: '${bookName}' has ${entries} entries; ${writes}; ${result.calls} model call${result.calls === 1 ? '' : 's'}; ${result.held.length} held; ${result.ledger.review.length} for review.`;
+    // A book built in parts says so: it is not a one-shot result.
+    const chunked = result.ledger.chunked ? ` Built in ${result.ledger.chunked.parts.length} parts (chunked): the chat was too long for one call.` : '';
+    return `Canonkeeper: '${bookName}' has ${entries} entries; ${writes}; ${result.calls} model call${result.calls === 1 ? '' : 's'}; ${result.held.length} held; ${result.ledger.review.length} for review.${chunked}`;
 }
 
 /**
@@ -84,7 +86,7 @@ function summarize(result, bookName) {
  *   bookExists(name), loadBook(name), saveBook(name, data), createBook(name)
  *   saveMetadata()
  *   generate                       the core's generate (profileGenerate)
- *   settings                       { contextTokens, maxOutputTokens }
+ *   settings                       { contextTokens, maxOutputTokens, outputShare? }
  *   profile                        { id, name, model } for the record
  *   log(line)
  *
@@ -137,6 +139,7 @@ export async function runCanon(st) {
             generate: st.generate,
             contextTokens: st.settings.contextTokens,
             maxOutputTokens: st.settings.maxOutputTokens,
+            outputShare: st.settings.outputShare,
         });
 
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the run; nothing was written. Run /canon again');

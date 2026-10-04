@@ -19,6 +19,9 @@
 //   C8  scene-boundary precision and recall at ±tolerance messages
 //   E9  editing one scene changes only that scene's entities, and pinned
 //       entries survive the edit (opt-in: needs an edit fixture and output)
+//   K10 a run built in parts says so: its ledger records two or more parts
+//       that read every message exactly once, in order, and a reconciliation
+//       pass (opt-in: for a story that doesn't fit the window)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -153,6 +156,31 @@ export function checkI6PinsSurvive(book, rerun) {
         }
     }
     return result('I6', name, offenders.length === 0, { pinned: pinned.map((e) => e.uid), offenders });
+}
+
+// ── K10 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * `ledger` is the run's ledger.json. A chunked book must never pass for a
+ * one-shot one, and its parts must have read the whole story: no message
+ * skipped, none read twice as a part (the previous part's tail may be shown
+ * as context, which is not a part).
+ */
+export function checkK10Chunked(ledger, messageCount) {
+    const name = 'output flagged as chunked, parts cover the story';
+    const ck = ledger?.chunked;
+    if (!ck || !Array.isArray(ck.parts)) return result('K10', name, false, { reason: "ledger has no 'chunked' record" });
+    const problems = [];
+    if (ck.parts.length < 2) problems.push(`only ${ck.parts.length} part(s)`);
+    let next = 0;
+    for (const p of ck.parts) {
+        if (p.from !== next) problems.push(`part ${p.part} starts at ${p.from}, expected ${next}`);
+        if (!(p.to >= p.from)) problems.push(`part ${p.part} is empty`);
+        next = p.to + 1;
+    }
+    if (next !== messageCount) problems.push(`parts end at ${next - 1}, the story at ${messageCount - 1}`);
+    if (!ck.reconciliation || typeof ck.reconciliation.ran !== 'boolean') problems.push('no reconciliation record');
+    return result('K10', name, !problems.length, { parts: ck.parts.map((p) => [p.from, p.to]), reconciliation: ck.reconciliation ?? null, problems });
 }
 
 // ── E9 ───────────────────────────────────────────────────────────────────────

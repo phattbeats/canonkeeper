@@ -126,12 +126,14 @@ function merge(canon, found, previous, fresh, review) {
  * pinned entry and every entry Canonkeeper didn't write held, and entries
  * kept on their uids by title. Then the same diff as any other run.
  */
-async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens }) {
+async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare }) {
     const entries = Object.values(book.entries);
     const held = entries.filter((e) => e.canonkeeper?.pinned || !e.canonkeeper);
     const uids = new Map(entries.map((e) => [fold(e.comment ?? ''), e.uid]));
     const nextUid = Math.max(-1, ...entries.map((e) => e.uid)) + 1;
-    const fresh = await build({ messages, generate, contextTokens, maxOutputTokens, pinned: held, uids, nextUid });
+    let calls = 0;
+    const counted = (req) => (calls++, generate(req));
+    const fresh = await build({ messages, generate: counted, contextTokens, maxOutputTokens, outputShare, pinned: held, uids, nextUid });
     const ops = plan(book, Object.values(fresh.book.entries));
     return {
         book: apply(book, ops),
@@ -139,7 +141,7 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
         ledger: fresh.ledger,
         plan: ops,
         held: held.map((e) => ({ uid: e.uid, title: e.comment, reason: e.canonkeeper ? 'pinned' : 'not written by Canonkeeper' })),
-        calls: 1,
+        calls,
         wrote: ops.length > 0,
     };
 }
@@ -151,9 +153,9 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
  * list of writes made (empty means none), `held` the entries kept as they
  * were and why, `calls` the model calls made. The input book is not mutated.
  */
-export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens }) {
+export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare }) {
     if (!messages.length) throw new Error('empty transcript');
-    if (ledger?.version !== LEDGER_VERSION) return rebuild({ book, messages, generate, contextTokens, maxOutputTokens });
+    if (ledger?.version !== LEDGER_VERSION) return rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare });
 
     const held = heldEntries(book, ledger.written);
     const kept = held.map((h) => h.entry);
@@ -189,7 +191,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
         scenes = scenes.filter((b) => !windows.some(([a, z]) => b > a && b <= z));
 
         if (windows.length) {
-            budget = planBudget({ contextTokens, maxOutputTokens });
+            budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
             const prompt = buildUpdatePrompt(messages, windows, canon, previous, new Set(fresh), budget.output);
             const needed = estimateTokens(prompt.system + prompt.user);
             if (needed > budget.input) throw new TooLongError(needed, budget.input);
@@ -219,6 +221,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
             revision: ledger.revision + (ops.length ? 1 : 0),
             held: kept,
             previous: ledger.written,
+            chunked: ledger.chunked,
         }),
         plan: ops,
         held: held.map((h) => ({ uid: h.entry.uid, title: h.entry.comment, reason: h.reason })),

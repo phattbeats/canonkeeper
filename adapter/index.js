@@ -61,7 +61,9 @@ async function canon() {
             },
             saveMetadata: () => c.saveMetadata(),
             generate: profileGenerate({ send, extract: (json) => c.extractMessageFromData(json, api), profileId: profile.id, log }),
-            settings: { contextTokens: Number(s.contextTokens), maxOutputTokens: Number(s.maxOutputTokens) },
+            // outputShare has no control in the panel: the live test sets it to
+            // read the fixture story in parts on a small window.
+            settings: { contextTokens: Number(s.contextTokens), maxOutputTokens: Number(s.maxOutputTokens), outputShare: Number(s.outputShare) || undefined },
             profile: { id: profile.id, name: profile.name, model: profile.model ?? null },
             log,
         });
@@ -125,6 +127,7 @@ async function renderStatus(phase) {
         if (last.ok) parts.push(`<div class="canonkeeper-ok">${esc(last.summary)}</div>`);
         else parts.push(`<div class="canonkeeper-error">Failed: ${esc(last.error)}</div>`);
         if (state.ledger) parts.push(`<div>Ledger revision ${esc(state.ledger.revision)}, ${esc(state.ledger.messageCount)} messages, ${esc(state.ledger.scenes.length + 1)} scenes</div>`);
+        if (state.ledger?.chunked) parts.push(`<div class="canonkeeper-chunked">Chunked build: read in ${esc(state.ledger.chunked.parts.length)} parts (${esc(state.ledger.chunked.parts.map((p) => `${p.from}–${p.to}`).join(', '))}), then reconciled. Not a one-shot result.</div>`);
         if (last.plan?.length) parts.push(`<details><summary>Writes (${last.plan.length})</summary><pre>${esc(last.plan.join('\n'))}</pre></details>`);
         if (last.held?.length) parts.push(`<details><summary>Held (${last.held.length})</summary><pre>${esc(last.held.map((h) => `${h.title}: ${h.reason}`).join('\n'))}</pre></details>`);
         if (last.review?.length) parts.push(`<details><summary>For review (${last.review.length})</summary><pre>${esc(last.review.map((r) => (typeof r === 'string' ? r : `${r.name ?? r.key ?? ''}: ${r.reason ?? JSON.stringify(r)}`)).join('\n'))}</pre></details>`);

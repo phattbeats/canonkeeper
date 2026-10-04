@@ -19,6 +19,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 //   BROWSER_WS    a Chrome DevTools websocket (e.g. browserless)
 //   PROXY_URL     a Claude-compatible endpoint for the connection profile
 //   OUT_DIR       where evidence/<stamp>/ goes (default: .run/live)
+//   CONTEXT       the window typed into the panel (default 200000)
+//   OUTPUT_SHARE  set with CONTEXT to read the story in parts: the share of
+//                 the window kept for output. It has no control in the panel,
+//                 so it goes into the extension's settings, and the gate then
+//                 runs with --chunked (K10)
 // Needs playwright-core, which the repo doesn't depend on: install it next
 // to wherever you run this from.
 const env = (k, d) => process.env[k] ?? d;
@@ -33,6 +38,8 @@ const PROFILE = 'Claude Sonnet 5 (anthropic-proxy)';
 const CHAR = 'Narrator';
 const CHAT = 'Saltwind';
 const RUN_TIMEOUT = 20 * 60 * 1000;
+const CONTEXT = env('CONTEXT', '200000');
+const OUTPUT_SHARE = env('OUTPUT_SHARE');
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const OUT = path.join(env('OUT_DIR', path.join(REPO, '.run', 'live')), stamp);
@@ -211,10 +218,18 @@ async function main() {
     await page.click('#canonkeeper_settings .inline-drawer-toggle');
     await sleep(500);
     await page.selectOption('#canonkeeper_profile', { label: PROFILE });
-    await page.fill('#canonkeeper_context', '200000');
+    await page.fill('#canonkeeper_context', CONTEXT);
     await page.dispatchEvent('#canonkeeper_context', 'change');
+    if (OUTPUT_SHARE) {
+        await page.evaluate((share) => {
+            const c = SillyTavern.getContext();
+            c.extensionSettings.canonkeeper.outputShare = Number(share);
+            c.saveSettingsDebounced();
+        }, OUTPUT_SHARE);
+        log(`[setup] extension setting outputShare = ${OUTPUT_SHARE} (no panel control)`);
+    }
     await sleep(2000);
-    log(`[ui] Canonkeeper panel: profile '${PROFILE}', context 200000`);
+    log(`[ui] Canonkeeper panel: profile '${PROFILE}', context ${CONTEXT}`);
     await page.locator('#canonkeeper_settings').scrollIntoViewIfNeeded();
     await shot(page, '03-settings.png');
 
@@ -240,6 +255,9 @@ async function main() {
     log(`[server] lorebook '${name}' on the server: ${Object.keys(book1.entries).length} entries; bound to the chat: ${run1.chat[0].chat_metadata.world_info === name}`);
     save('book-run1.json', book1);
     save('scenes.json', { boundaries: stateOf(run1.chat).ledger.scenes });
+    save('ledger.json', stateOf(run1.chat).ledger);
+    const chunked = stateOf(run1.chat).ledger.chunked;
+    log(`[server] ledger in the chat file: ${chunked ? `chunked, ${chunked.parts.length} parts ${JSON.stringify(chunked.parts.map((p) => [p.from, p.to]))}, reconciliation ran=${chunked.reconciliation.ran}` : 'one-shot'}`);
     save('chat-after-run1.jsonl', run1.chat.map((l) => JSON.stringify(l)).join('\n') + '\n');
     await sleep(2000);
     await page.locator('#canonkeeper_status').scrollIntoViewIfNeeded();
@@ -284,7 +302,7 @@ async function main() {
     await browser.close();
 
     // 9. The gate, on the files the server holds.
-    const gate = spawnSync('node', [path.join(REPO, 'harness/gate.js'), '--story', path.join(REPO, 'fixtures/story'), '--run', OUT], { encoding: 'utf8' });
+    const gate = spawnSync('node', [path.join(REPO, 'harness/gate.js'), '--story', path.join(REPO, 'fixtures/story'), '--run', OUT, ...(OUTPUT_SHARE ? ['--chunked'] : [])], { encoding: 'utf8' });
     save('gate.txt', gate.stdout + gate.stderr);
     for (const line of (gate.stdout + gate.stderr).trim().split('\n')) log(`[gate] ${line}`);
     log(`[gate] exit ${gate.status}`);

@@ -16,6 +16,7 @@ export function estimateTokens(text) {
  * model can actually emit.
  */
 export function planBudget({ contextTokens, maxOutputTokens = 64000, outputShare = 0.25 }) {
+    if (!(outputShare > 0 && outputShare < 1)) throw new Error('outputShare must be between 0 and 1');
     if (!Number.isInteger(contextTokens) || contextTokens <= 0) throw new Error('contextTokens must be a positive integer');
     const output = Math.min(maxOutputTokens, Math.floor(contextTokens * outputShare));
     return { contextTokens, output, input: contextTokens - output };
@@ -23,7 +24,7 @@ export function planBudget({ contextTokens, maxOutputTokens = 64000, outputShare
 
 export class TooLongError extends Error {
     constructor(needed, available) {
-        super(`transcript needs ~${needed} prompt tokens but only ${available} fit; the chunked fallback (build step 4) handles stories this long`);
+        super(`the prompt needs ~${needed} tokens but only ${available} fit in the window`);
         this.needed = needed;
         this.available = available;
     }

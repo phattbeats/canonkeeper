@@ -27,7 +27,8 @@ jobs:
             fixtures/story/broken-collision/book.json \
             fixtures/story/recorded/replies.json \
             fixtures/story/edits/undercroft/transcript.jsonl \
-            fixtures/story/edits/undercroft/replies.json
+            fixtures/story/edits/undercroft/replies.json \
+            fixtures/story/chunked/replies.json
 
       # The gate steps below run even if the tests fail, so each signal is
       # reported on its own.
@@ -46,6 +47,24 @@ jobs:
       - name: Gate on the builder's own output must be green
         if: ${{ !cancelled() }}
         run: npm run build:story
+
+      # The chunked fallback: the same story on a window too small for it,
+      # replayed from a real chunked run (two parts and a reconciliation).
+      # The invariants I1-I6 must hold and K10 must find the run flagged as
+      # chunked, its parts covering every message once.
+      - name: Gate on a chunked build must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:chunked
+
+      # K10 has to be able to fail: the one-shot run above must not pass as
+      # chunked. Exit 1 (red) is required.
+      - name: A one-shot run gated as chunked must be red
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          node harness/gate.js --story fixtures/story --run .run/story --chunked
+          code=$?
+          if [ "$code" -ne 1 ]; then echo "expected exit 1 (red), got $code"; exit 1; fi
 
       # Negative control: the gate has to be able to fail. Exit 1 (red) is
       # required here; 0 (a pass) or 2 (fixture error) both fail the job.

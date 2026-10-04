@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Offline runner for the core. Writes a run directory the gate can score.
 //
-//   canonkeeper build <transcript.jsonl> --out <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
+//   canonkeeper build <transcript.jsonl> --out <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--output-share <0..1>]
 //   canonkeeper pin   <dir> <entry title>          mark an entry as human-pinned in <dir>/book.json
 //   canonkeeper rerun <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
 //   canonkeeper update <transcript.jsonl> --run <dir> [--out <dir>] [--model <id> | --replay <replies.json>] [--context <tokens>] [--dry-run]
@@ -39,6 +39,7 @@ function parseArgs(argv) {
         else if (a === '--model') args.model = argv[++i];
         else if (a === '--replay') args.replay = argv[++i];
         else if (a === '--context') args.context = Number(argv[++i]);
+        else if (a === '--output-share') args.outputShare = Number(argv[++i]);
         else if (a === '--dry-run') args.dryRun = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
@@ -65,7 +66,7 @@ async function main() {
         mkdirSync(args.dir, { recursive: true });
         let out;
         try {
-            out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context });
+            out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context, outputShare: args.outputShare });
         } finally {
             // Kept even when the run fails, so a rejected reply can be inspected.
             writeJson(join(args.dir, 'replies.json'), replies);
@@ -75,6 +76,12 @@ async function main() {
         writeJson(join(args.dir, 'ledger.json'), out.ledger);
         const n = Object.keys(out.book.entries).length;
         console.log(`built ${n} entries, ${out.scenes.boundaries.length} scene breaks, ${out.ledger.review.length} for review, ${replies.length} model call(s), ${((Date.now() - started) / 1000).toFixed(0)}s -> ${args.dir}`);
+        const ck = out.ledger.chunked;
+        if (ck) {
+            console.log(`CHUNKED: the story didn't fit --context ${args.context}, so it was read in ${ck.parts.length} parts: ${ck.parts.map((p) => `${p.from}-${p.to}`).join(', ')}`);
+            const r = ck.reconciliation;
+            console.log(r.ran ? `  reconciliation merged ${r.merges.length}: ${r.merges.map((m) => `${m.same.join(' + ')} -> ${m.keep}`).join('; ') || 'none'}` : `  reconciliation skipped: ${r.reason}`);
+        }
         for (const r of out.ledger.review) console.log(`  review: ${r.name}: ${r.reason}`);
         return;
     }
@@ -103,6 +110,7 @@ async function main() {
             messages,
             generate: recording(model(args), replies),
             contextTokens: args.context,
+            outputShare: args.outputShare,
         });
         console.log(`${out.plan.length} write(s), ${out.calls} model call(s), ${out.held.length} entr${out.held.length === 1 ? 'y' : 'ies'} held`);
         for (const line of describe(out.plan)) console.log(`  ${line}`);

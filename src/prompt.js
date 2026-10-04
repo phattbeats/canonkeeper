@@ -29,7 +29,7 @@ export const SHAPE = `{
 export const FIELD_GUIDE = `Fields:
 - scenes: every point where the story cuts to a new scene: a jump in time, or a jump to a different place or situation. The first scene starts at 0. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. Continuous action is one scene even when the characters move from room to room or out of a building; only a cut starts a new one.
 - name: the full name, e.g. "Captain Ada Marsh" -> "Ada Marsh".
-- keys: the exact strings the story uses for this entity: full name, short name, and any epithet or title used in place of the name. Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
+- keys: the exact strings the story uses for this entity: full name, short name, and any epithet or title used in place of the name, never a pronoun. Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
 - facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. 1-5 facts of one short sentence each: be brief, so that every entity fits.
 - caseSensitive: true when one of its keys is also an ordinary word the story uses in lowercase with another meaning (a person named after a bird or a colour), so only the capitalised form should trigger it.
 - cascade: true when the entry's text should be allowed to trigger other entries it mentions. Use false only for broad entries that mention almost everything.
@@ -61,7 +61,75 @@ export function retryPrompt(prompt, problem) {
     };
 }
 
-export const UPDATE_GUIDE = `This story already has a lorebook. The passages below are whole scenes in which some messages are new or were edited since it was built; those are marked (changed). The other messages are unchanged and are there for context: what they establish is already in the lorebook. Report:
+export const PART_SYSTEM = `You build a lorebook for a roleplay story too long to read at once, so you read it in parts, in order. You read one part and report two things as JSON: where scenes start in it, and what it establishes about the entities the story needs to remember.\n\n${RULES}`;
+
+/** A known entity, for a prompt: name, keys, and (unless `brief`) its facts. */
+function rosterLine(e, brief) {
+    const keys = e.keys.length ? ` (keys: ${e.keys.join('; ')})` : '';
+    return `- ${e.name}${keys}${brief ? '' : e.facts.map((f) => `\n  kept: ${f.text}`).join('')}`;
+}
+
+export function renderRoster(known, { brief = false } = {}) {
+    return known.map((e) => rosterLine(e, brief)).join('\n');
+}
+
+/**
+ * The scene starts a part reports on: from its second message through the
+ * first message of the next part. Whether a scene starts at a part's own
+ * first message is decided by the part before it, which has read the scene
+ * that leads up to it.
+ */
+export function sceneRange(from, to, count) {
+    return [from + 1, Math.min(to + 1, count - 1)];
+}
+
+/**
+ * One part of a chunked build. `known` is the ledger so far, `context` the
+ * end of the previous part (shown, not reported on), `from`..`to` the part,
+ * and message `to + 1`, if there is one, is shown as the next part's start.
+ */
+export function buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens }) {
+    const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
+    const ctx = context
+        ? `<context from="${context[0]}" to="${context[1]}">\n${renderTranscript(messages.slice(context[0], context[1] + 1))}\n</context>\n\n`
+        : '';
+    const next = to + 1 < messages.length ? to + 1 : null;
+    const after = next == null ? '' : `\n\n<next_part_starts>\n${renderTranscript([messages[next]])}\n</next_part_starts>`;
+    const [s0, s1] = sceneRange(from, to, messages.length);
+    const guide = `This is part ${part}: messages ${from} to ${to} of ${messages.length}. ${part > 1 ? '<known_entities> lists what the earlier parts found.' : 'It is the first part.'}${context ? ` Messages ${context[0]} to ${context[1]}, in <context>, end the previous part; they are there so you can follow the story across the cut, and were already read.` : ''}${next == null ? ' It is the last part.' : ` Message ${next}, in <next_part_starts>, begins the next part.`}
+Report:
+- scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
+- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
+- Every fact must cite messages from ${from} to ${to}. Report nothing from <context> or <next_part_starts> but scene starts.`;
+    return {
+        system: PART_SYSTEM,
+        user: `${FIELD_GUIDE}\n\n${guide}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\nYour reply has room for about ${room} entities. Use what the story needs and no more, but don't leave out a qualifying entity to save space.\n\n<known_entities>\n${renderRoster(known, { brief }) || '(none yet)'}\n</known_entities>\n\n${ctx}<part from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</part>${after}`,
+    };
+}
+
+export const RECONCILE_SYSTEM = `You check a lorebook built from a long roleplay story read in parts. Each part was read with only a list of what the earlier parts had found, so one real entity can be listed twice: under an epithet or title in an early part and its name in a later one ("the cartographer", then "Ines Vell"), or under two spellings of one name. You report those pairs as JSON.
+
+Rules:
+- Merge only when the listed facts and keys show it is the same entity. Two people who share a title or a family name are different entities. If unsure, leave them apart.
+- Use the names exactly as listed. Keep the fullest proper name.
+- Return only the JSON object. No prose, no code fences.`;
+
+export const MERGE_SHAPE = `{ "merges": [ { "keep": "<listed name to keep>", "same": ["<other listed name for the same entity>"] } ] }`;
+
+export function buildReconcilePrompt(entities, { brief = false } = {}) {
+    const list = entities
+        .map((e) => {
+            const ids = e.facts.flatMap((f) => f.messages);
+            return `${rosterLine(e, brief)}\n  messages ${Math.min(...ids)}-${Math.max(...ids)}`;
+        })
+        .join('\n');
+    return {
+        system: RECONCILE_SYSTEM,
+        user: `Return JSON in exactly this shape:\n${MERGE_SHAPE}\n\nAn empty "merges" list is a fine answer.\n\n<entities>\n${list}\n</entities>`,
+    };
+}
+
+export const UPDATE_GUIDE =`This story already has a lorebook. The passages below are whole scenes in which some messages are new or were edited since it was built; those are marked (changed). The other messages are unchanged and are there for context: what they establish is already in the lorebook. Report:
 - scenes: scene starts inside the passages. Each passage begins a scene.
 - entities: every entity listed in <previous_facts>, and every entity the changes establish something new about, known or new. For a known entity, use its name exactly as <known_entities> lists it.
 - <previous_facts> are facts the lorebook took from messages that have since changed. They have been removed. Restate word for word, with its ids, each one the passages still support, and leave out any they no longer support.
@@ -76,9 +144,7 @@ export const UPDATE_GUIDE = `This story already has a lorebook. The passages bel
  */
 export function buildUpdatePrompt(messages, windows, known, previous, changed, outputTokens) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
-    const roster = known
-        .map((e) => `- ${e.name}${e.keys.length ? ` (keys: ${e.keys.join('; ')})` : ''}${e.facts.map((f) => `\n  kept: ${f.text}`).join('')}`)
-        .join('\n');
+    const roster = renderRoster(known);
     const prior = previous.map((p) => `- ${p.name}: ${p.text} [${p.messages.join(', ')}]`).join('\n');
     const passages = windows
         .map(([from, to]) => `<passage from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1), changed)}\n</passage>`)

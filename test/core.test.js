@@ -147,11 +147,17 @@ test('toRanges merges consecutive ids', () => {
 
 // ── size comes from the context window ──────────────────────────────────────
 
-test('a story that does not fit the window is refused before any model call', async () => {
+test('a window too small for the prompt itself is refused before any model call', async () => {
     let called = false;
     const generate = async () => ((called = true), recorded[0]);
-    await assert.rejects(build({ messages, generate, contextTokens: 4000 }), TooLongError);
+    await assert.rejects(build({ messages, generate, contextTokens: 1500 }), TooLongError);
     assert.equal(called, false);
+});
+
+test('a pronoun is never a key: a first-person narrator is not every "I"', () => {
+    const { entries, ledger } = compile([ent('Ines Vell', ['Ines Vell', 'I', 'her'], [65])], messages);
+    assert.deepEqual(titled(entries, 'Ines Vell').key, ['Ines Vell']);
+    assert.deepEqual(ledger[0].compiled.dropped.map((d) => d.key), ['I', 'her']);
 });
 
 // ── pins (re-runs are in update.test.js) ───────────────────────────────────

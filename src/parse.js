@@ -65,3 +65,36 @@ export function readReply(text, messageCount) {
     });
     return { scenes, entities, review };
 }
+
+/**
+ * Validates a reconciliation reply against `entities`, the { name, keys }
+ * it was shown. A merge naming an entity that wasn't listed, or one already
+ * used by another merge, is set aside for review: never applied by guessing.
+ * Naming one of the kept entity's own keys merges nothing and is ignored.
+ * Returns { merges: [{ keep, same: [...] }], review }, names as listed.
+ */
+export function readMerges(text, entities) {
+    const data = extractJson(text);
+    if (!data || typeof data !== 'object' || !Array.isArray(data.merges)) throw new ModelOutputError("reply needs a 'merges' array");
+    const listed = new Map(entities.map((e) => [e.name.toLowerCase(), e.name]));
+    const keysOf = new Map(entities.map((e) => [e.name, new Set((e.keys ?? []).map((k) => k.toLowerCase()))]));
+    const used = new Set();
+    const merges = [];
+    const review = [];
+    for (const m of data.merges) {
+        const keep = isStr(m?.keep) ? listed.get(m.keep.trim().toLowerCase()) : null;
+        const own = (s) => keep && !listed.has(s.trim().toLowerCase()) && keysOf.get(keep).has(s.trim().toLowerCase());
+        const said = Array.isArray(m?.same) ? m.same.filter(isStr) : [];
+        if (keep && said.length && said.every(own)) continue;
+        const same = said.filter((s) => !own(s)).map((s) => listed.get(s.trim().toLowerCase()));
+        const all = [keep, ...same];
+        const label = isStr(m?.keep) ? m.keep.trim() : 'merge';
+        if (!keep || !same.length || all.some((n) => !n)) review.push({ name: label, reason: 'reconciliation named an entity that was not listed; not merged' });
+        else if (new Set(all).size !== all.length || all.some((n) => used.has(n))) review.push({ name: label, reason: 'reconciliation used an entity in two merges; not merged' });
+        else {
+            all.forEach((n) => used.add(n));
+            merges.push({ keep, same });
+        }
+    }
+    return { merges, review };
+}

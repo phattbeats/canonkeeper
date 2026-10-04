@@ -2,8 +2,11 @@
 // The acceptance gate. Runs the answer-key self-check, then I1–I6 and C7–C8,
 // on one builder run against one transcript. With --edits it also runs E9 on
 // every edit fixture, and a run without output for one is a fixture error.
+// With --chunked (a run on a window too small for the story) it also runs
+// K10 on the run's ledger.json. The step 4 bar for a chunked run is the
+// invariants plus K10, so C7 and C8 are then scored and shown but don't gate.
 //
-//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--json]
+//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--json]
 //
 // Exit codes: 0 every check green · 1 at least one check red ·
 //             2 fixtures missing or malformed (never a pass)
@@ -11,7 +14,7 @@
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTranscript, loadAnswerKey, loadRun, loadEdits, FixtureError } from './load.js';
+import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, FixtureError } from './load.js';
 import {
     validateAnswerKey,
     checkI1KeywordCollisions,
@@ -23,9 +26,10 @@ import {
     scoreC7Coverage,
     scoreC8Boundaries,
     checkE9EditLocality,
+    checkK10Chunked,
 } from './checks.js';
 
-export function runGate({ storyDir, runDir, edits = false }) {
+export function runGate({ storyDir, runDir, edits = false, chunked = false }) {
     const messages = loadTranscript(join(storyDir, 'transcript.jsonl'));
     const key = loadAnswerKey(join(storyDir, 'answer-key.json'));
     const run = loadRun(runDir);
@@ -40,22 +44,24 @@ export function runGate({ storyDir, runDir, edits = false }) {
         checkI4Provenance(run.book, messages),
         checkI5ZeroWritesOnRerun(run.book, run.rerun),
         checkI6PinsSurvive(run.book, run.rerun),
-        scoreC7Coverage(run.book, key, messages),
-        scoreC8Boundaries(run.boundaries, key.boundaries),
+        { ...scoreC7Coverage(run.book, key, messages), ...(chunked ? { gates: false } : {}) },
+        { ...scoreC8Boundaries(run.boundaries, key.boundaries), ...(chunked ? { gates: false } : {}) },
     ];
+    if (chunked) checks.push(checkK10Chunked(loadLedger(runDir), messages.length));
     if (edits) {
         for (const e of loadEdits(storyDir, runDir)) checks.push({ ...checkE9EditLocality(run.book, e.book, messages, e.transcript, key.boundaries), edit: e.name });
     }
-    return { ok: checks.every((c) => c.ok), messages: messages.length, entries: run.book.length, checks };
+    return { ok: checks.every((c) => c.ok || c.gates === false), messages: messages.length, entries: run.book.length, checks };
 }
 
 function parseArgs(argv) {
-    const args = { story: 'fixtures/story', run: null, edits: false, json: false };
+    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, json: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--story') args.story = argv[++i];
         else if (argv[i] === '--run') args.run = argv[++i];
         else if (argv[i] === '--json') args.json = true;
         else if (argv[i] === '--edits') args.edits = true;
+        else if (argv[i] === '--chunked') args.chunked = true;
         else throw new FixtureError(`unknown argument: ${argv[i]}`);
     }
     args.run ??= join(args.story, 'reference');
@@ -67,7 +73,7 @@ function main() {
     let args;
     try {
         args = parseArgs(process.argv.slice(2));
-        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits });
+        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked });
     } catch (err) {
         if (!(err instanceof FixtureError)) throw err;
         console.error(`FIXTURE ERROR: ${err.message}`);
@@ -78,7 +84,7 @@ function main() {
     } else {
         console.log(`run ${args.run}: ${report.entries} entries, ${report.messages} messages`);
         for (const c of report.checks) {
-            console.log(`  ${c.ok ? 'PASS' : 'FAIL'}  ${c.id}  ${c.name}${c.edit ? ` (${c.edit})` : ''}`);
+            console.log(`  ${c.ok ? 'PASS' : c.gates === false ? 'INFO' : 'FAIL'}  ${c.id}  ${c.name}${c.edit ? ` (${c.edit})` : ''}`);
             if (!c.ok) console.log(`        ${JSON.stringify(c.detail)}`);
         }
         console.log(report.ok ? 'GATE GREEN' : 'GATE RED');

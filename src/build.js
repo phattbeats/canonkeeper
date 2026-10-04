@@ -1,29 +1,32 @@
-// The one-shot core: transcript in, complete lorebook out, in one model call.
+// The one-shot core: transcript in, complete lorebook out, in one model call
+// (or, for a story too long for the window, in parts: chunked.js).
 //
 // Pure: no SillyTavern imports, no file or network access. The model comes in
 // as `generate({ system, user, maxTokens }) -> Promise<string>` and the
 // context window as a number, so the same code runs offline from a file and,
 // later, inside SillyTavern behind the adapter.
 
-import { planBudget, estimateTokens, TooLongError } from './budget.js';
+import { planBudget, estimateTokens } from './budget.js';
 import { buildPrompt, retryPrompt } from './prompt.js';
 import { readReply, ModelOutputError } from './parse.js';
 import { compile } from './compile.js';
 import { fingerprint, messageHash } from './fingerprint.js';
 import { entryHash } from './plan.js';
+import { buildChunked } from './chunked.js';
 
 /** v2: the ledger holds the canon, message hashes and written-entry hashes. */
 export const LEDGER_VERSION = 2;
 
-export async function ask(generate, prompt, maxTokens, messageCount) {
+/** One model call, read by `read` (readReply by default). */
+export async function ask(generate, prompt, maxTokens, messageCount, read = readReply) {
     const first = await generate({ ...prompt, maxTokens });
     try {
-        return readReply(first, messageCount);
+        return read(first, messageCount);
     } catch (err) {
         if (!(err instanceof ModelOutputError)) throw err;
         // Strict JSON with one retry, then give up. Never repair by guessing.
         const second = await generate({ ...retryPrompt(prompt, err.message), maxTokens });
-        return readReply(second, messageCount);
+        return read(second, messageCount);
     }
 }
 
@@ -35,8 +38,10 @@ export function toBook(entries) {
 /**
  * The ledger: the per-chat state a later run starts from. The lorebook is
  * output; this is the record. `revision` counts the runs that wrote.
+ * `chunked`, set when the book was built in parts (chunked.js), says so for
+ * as long as the ledger lives.
  */
-export function makeLedger({ messages, budget, scenes, compiled, review, revision, held = [], previous = {} }) {
+export function makeLedger({ messages, budget, scenes, compiled, review, revision, held = [], previous = {}, chunked }) {
     const heldUids = new Set(held.map((e) => String(e.uid)));
     const written = {};
     for (const e of compiled.entries) {
@@ -57,11 +62,13 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
         written,
         contested: compiled.contested,
         review,
+        ...(chunked ? { chunked } : {}),
     };
 }
 
 /**
- * Builds the whole book in one call.
+ * Builds the whole book in one call, or, for a story that doesn't fit the
+ * window, in parts (chunked.js), and then the ledger says so.
  *
  * Returns { book, scenes, ledger }: `book` is a SillyTavern World Info file,
  * `scenes` the ids that start a new scene, and `ledger` the state a later run
@@ -69,12 +76,12 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
  * `pinned` entries are kept verbatim; `uids` and `nextUid` keep entities on
  * the uids they had (see compile).
  */
-export async function build({ messages, generate, contextTokens, maxOutputTokens, pinned = [], uids, nextUid }) {
+export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], uids, nextUid }) {
     if (!messages.length) throw new Error('empty transcript');
-    const budget = planBudget({ contextTokens, maxOutputTokens });
+    const budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
     const prompt = buildPrompt(messages, budget.output);
     const needed = estimateTokens(prompt.system + prompt.user);
-    if (needed > budget.input) throw new TooLongError(needed, budget.input);
+    if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, uids, nextUid });
 
     const reply = await ask(generate, prompt, budget.output, messages.length);
     const compiled = compile(reply.entities, messages, { pinned, uids, nextUid });

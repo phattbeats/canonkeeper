@@ -13,6 +13,12 @@ export const MAX_FIRE_FRACTION = 0.8;
 const fold = (s) => s.toLowerCase();
 
 /**
+ * A pronoun points at whoever the sentence is about, never at one entity: a
+ * first-person narrator's "I" is every speaker's "I".
+ */
+const PRONOUNS = new Set(['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their']);
+
+/**
  * A capitalised one-word key needs case-sensitive matching when the story
  * also uses the same word in lower case: that's an ordinary word, not this
  * entity (Wren the runner vs. a wren on the windowsill). Phrases don't count:
@@ -107,6 +113,10 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
             // The model's own spelling wins over the title's capitalisation.
             for (const k of [...e.keys, e.name]) if (!seen.has(fold(k))) seen.set(fold(k), k);
             let keys = [...seen.values()].filter((k) => {
+                if (PRONOUNS.has(fold(k))) {
+                    dropped.push({ key: k, reason: 'a pronoun, not a name' });
+                    return false;
+                }
                 if (firesOn(k, false, messages).length) return true;
                 if (k !== e.name) dropped.push({ key: k, reason: 'not in the transcript' });
                 return false;

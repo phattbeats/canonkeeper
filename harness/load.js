@@ -91,6 +91,11 @@ export function loadRun(dir) {
     };
 }
 
+/** The run's ledger.json, which only a chunked run is asked for. */
+export function loadLedger(dir) {
+    return readJson(join(dir, 'ledger.json'));
+}
+
 /**
  * Edit fixtures: `<story>/edits/<name>/transcript.jsonl`, the story with one
  * scene edited. A run answers each with `<run>/edits/<name>/book.json`, its

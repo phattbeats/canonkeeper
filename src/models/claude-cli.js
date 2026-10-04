@@ -23,6 +23,8 @@ export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
                 } catch {
                     return reject(new Error(`claude exited ${code}: ${err || out}`.slice(0, 2000)));
                 }
+                // The same, when the CLI reports it as an error instead.
+                if (parsed.api_error === 'max_output_tokens') return resolve('');
                 if (parsed.is_error || typeof parsed.result !== 'string') return reject(new Error(`claude failed: ${JSON.stringify(parsed).slice(0, 2000)}`));
                 // A reply cut off at the output limit is not a reply. The CLI
                 // continues it in a second iteration and `result` then holds
