@@ -1,0 +1,8 @@
+.canonkeeper .canonkeeper-row { display: flex; gap: 8px; align-items: end; margin: 6px 0; }
+.canonkeeper .canonkeeper-row label { flex: 1; }
+.canonkeeper .canonkeeper-status { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }
+.canonkeeper .canonkeeper-status pre { white-space: pre-wrap; max-height: 300px; overflow-y: auto; font-size: 0.85em; }
+.canonkeeper .canonkeeper-ok { color: var(--SmartThemeQuoteColor, #6c6); }
+.canonkeeper .canonkeeper-error { color: #e66; }
+.canonkeeper .canonkeeper-running { font-style: italic; }
+.canonkeeper .canonkeeper-entry { display: block; }
