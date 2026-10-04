@@ -146,3 +146,22 @@ export function loadAudit(dir) {
         },
     };
 }
+
+/**
+ * The other lorebooks active for a run's chat (`--books`):
+ * `<dir>/others.json`, { books: [{ name, via, before, after: [...] }] }.
+ * `before` is the book file exactly as the server sent it before the first
+ * run, and `after` the same file after each run, as text, so the check
+ * compares bytes. Their entries, read from `before`, get uids prefixed with
+ * the book's name so they never meet a uid of the chat's book.
+ */
+export function loadOthers(dir) {
+    const data = readJson(join(dir, 'others.json'));
+    if (!Array.isArray(data.books) || !data.books.length) throw new FixtureError(`${dir}/others.json lists no other books`);
+    return data.books.map((b) => {
+        if (typeof b.before !== 'string' || !Array.isArray(b.after) || !b.after.length) throw new FixtureError(`${dir}/others.json: '${b.name}' needs before and after as file text`);
+        const file = JSON.parse(b.before);
+        const entries = Object.values(file.entries ?? {}).map((e) => ({ ...normalizeEntry(e), uid: `${b.name}:${e.uid}`, book: b.name }));
+        return { name: b.name, via: b.via ?? null, before: b.before, after: b.after, entries };
+    });
+}

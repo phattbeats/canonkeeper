@@ -91,6 +91,28 @@ function summarize(result, bookName) {
 }
 
 /**
+ * The other lorebooks active for the chat (the character's, global worlds,
+ * the persona's), from `st.otherBooks()`, as the core's `foreign` entries:
+ * every enabled entry, with its book's name. The chat's own book is never one
+ * of them, whatever else it is bound as. Only read: nothing here writes them.
+ */
+export async function otherBooks(st, bookName, log = () => {}) {
+    const books = [];
+    const foreign = [];
+    const seen = new Set([bookName]);
+    for (const b of (await st.otherBooks?.()) ?? []) {
+        if (!b?.name || seen.has(b.name)) continue;
+        seen.add(b.name);
+        const entries = Object.values(b.entries ?? {}).filter((e) => e && !e.disable);
+        books.push({ name: b.name, via: b.via ?? null, entries: entries.length });
+        foreign.push(...entries.map((entry) => ({ book: b.name, entry })));
+    }
+    if (books.length) log(`other active lorebooks, read only: ${books.map((b) => `'${b.name}' (${b.via ? `${b.via}, ` : ''}${b.entries} entries)`).join(', ')}`);
+    else log('no other active lorebooks');
+    return { books, foreign };
+}
+
+/**
  * Brings the chat's lorebook up to date with `messages` (the whole chat for
  * /canon, the finished scenes for live mode). Binds a book first if the chat
  * has none. Writes only the plan, and only if the same chat is still open and
@@ -113,6 +135,7 @@ async function syncBook(st, { messages, ledger, starts, log }) {
     book.entries ??= {};
     const before = hashOf(book.entries);
     log(`lorebook '${bookName}': ${Object.keys(book.entries).length} entries`);
+    const { books, foreign } = await otherBooks(st, bookName, log);
 
     const result = await update({
         book: structuredClone(book),
@@ -123,6 +146,7 @@ async function syncBook(st, { messages, ledger, starts, log }) {
         maxOutputTokens: st.settings.maxOutputTokens,
         outputShare: st.settings.outputShare,
         starts,
+        foreign,
     });
 
     if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the run; nothing was written. Run /canon again');
@@ -135,7 +159,7 @@ async function syncBook(st, { messages, ledger, starts, log }) {
         await st.saveBook(bookName, result.book);
         log(`wrote ${result.plan.length} changes to '${bookName}'`);
     } else log('plan is empty: zero writes');
-    return { result, bookName, plan };
+    return { result: { ...result, books }, bookName, plan };
 }
 
 /** The record of a run that wrote (or could have), for the status view. */
@@ -150,6 +174,7 @@ function runRecord(result, plan, summary) {
         review: result.ledger.review,
         scenes: result.scenes.boundaries,
         entries: Object.keys(result.book.entries).length,
+        books: result.books,
     };
 }
 
@@ -311,11 +336,12 @@ export async function runAudit(st, { verify = true } = {}) {
         const ledger = state.book === bookName ? state.ledger ?? null : null;
         log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
         const previous = state.audit?.book === bookName ? state.audit : null;
-        const record = await audit({ book, ledger, messages, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous });
+        const { books, foreign } = await otherBooks(st, bookName, log);
+        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous });
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
         const summary = auditSummary(record, bookName);
         log(summary);
-        keep({ ...record, book: bookName, summary, accepted: previous?.accepted ?? [] });
+        keep({ ...record, book: bookName, books, summary, accepted: previous?.accepted ?? [] });
         await st.saveMetadata();
         return { summary, record };
     } catch (err) {
@@ -343,11 +369,12 @@ export async function acceptFinding(st, id) {
     const book = (await st.loadBook(bookName)) ?? { entries: {} };
     book.entries ??= {};
     const ledger = state.book === bookName ? state.ledger ?? null : null;
-    const out = await accept({ book, ledger, messages, record, id });
+    const { foreign } = await otherBooks(st, bookName);
+    const out = await accept({ book, ledger, messages, record, id, foreign });
     if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched; nothing was written');
     await st.saveBook(bookName, out.book);
     st.log?.(`accepted ${id}: ${out.writes.join('; ') || 'no writes'}`);
-    const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: record });
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, foreign, previous: record });
     const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: record.findings.find((f) => f.id === id).fix.says, writes: out.writes }];
     st.metadata[STATE_KEY] = {
         ...state,

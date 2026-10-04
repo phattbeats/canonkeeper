@@ -184,7 +184,7 @@ async function reconcile(canon, generate, budget, messageCount, review) {
  * this when the story doesn't fit; `ledger.chunked` records the parts and the
  * reconciliation, so the result is never taken for a one-shot build.
  */
-export async function buildChunked({ messages, generate, budget, pinned = [], uids, nextUid }) {
+export async function buildChunked({ messages, generate, budget, pinned = [], foreign = [], uids, nextUid }) {
     const canon = [];
     const scenes = new Set();
     const review = [];
@@ -209,7 +209,7 @@ export async function buildChunked({ messages, generate, budget, pinned = [], ui
     const reconciliation = await reconcile(canon, counted, budget, messages.length, review);
 
     const boundaries = [...scenes].sort((a, b) => a - b);
-    const compiled = compile(canon, messages, { pinned, uids, nextUid });
+    const compiled = compile(canon, messages, { pinned, foreign, uids, nextUid });
     return {
         book: toBook(compiled.entries),
         scenes: { boundaries },

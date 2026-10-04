@@ -72,12 +72,33 @@ function mergeByName(entities) {
     return [...byName.values()];
 }
 
+/** A plain key: a `/regex/` key is matched as a pattern, never as a name. */
+const plainKeys = (e) => (Array.isArray(e.key) ? e.key : []).map((k) => String(k).trim()).filter((k) => k && !/^\/.+\/[a-z]*$/.test(k));
+
+/**
+ * The entry in another book that already covers an entity: one with its
+ * title, or one that holds one of its names as a key. Null if none does.
+ */
+function coveredBy(e, foreign) {
+    const names = new Set([e.name, ...e.keys].map(fold).filter((k) => !PRONOUNS.has(k)));
+    return foreign.find((f) => fold(f.entry.comment ?? '') === fold(e.name))
+        ?? foreign.find((f) => plainKeys(f.entry).some((k) => names.has(fold(k))))
+        ?? null;
+}
+
 /**
  * Compiles entities into entries.
  *
  * `pinned` are existing entries kept verbatim: human-pinned, edited by hand,
  * or not Canonkeeper's at all. Their keys are claimed first, so they win
  * every contest, and an entity with the same title is held behind them.
+ *
+ * `foreign` are the enabled entries of the other lorebooks active for the
+ * chat (the character's, global, the persona's), as { book, entry }. They
+ * are read, never written: none of them is ever in `entries`. Their keys win
+ * every contest like a pin's, and an entity one of them covers, by title or
+ * by one of its names as a key, gets no entry. An entry Canonkeeper didn't
+ * write is the user's, so it is never adopted.
  *
  * `uids` maps a folded entity name to the uid it had last time, so an entity
  * keeps its entry across runs. New entities get uids from `nextUid` up, in
@@ -93,7 +114,7 @@ function mergeByName(entities) {
  * decision with its reason. `deleted` maps each deleted uid still in the
  * canon to its entity's name.
  */
-export function compile(entities, messages, { pinned = [], uids = new Map(), nextUid = 0, deleted = new Set() } = {}) {
+export function compile(entities, messages, { pinned = [], foreign = [], uids = new Map(), nextUid = 0, deleted = new Set() } = {}) {
     const review = [];
     const maxFires = Math.floor(messages.length * MAX_FIRE_FRACTION);
 
@@ -106,11 +127,20 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
     const merged = mergeByName(entities);
     const held = [];
     const gone = [];
+    const elsewhere = [];
+    const active = foreign.filter((f) => !f.entry.disable);
     const candidates = merged
         .filter((e) => {
             if (deleted.has(uids.get(fold(e.name)))) {
                 gone.push(e);
                 review.push({ name: e.name, reason: 'its entry was deleted from the book; left out' });
+                return false;
+            }
+            const cover = pinnedUid.has(fold(e.name)) ? null : coveredBy(e, active);
+            if (cover) {
+                const by = { book: cover.book, title: cover.entry.comment || `entry ${cover.entry.uid}` };
+                elsewhere.push({ ...e, heldBy: by });
+                review.push({ name: e.name, reason: `'${by.book}' already has '${by.title}'; no Canonkeeper entry`, book: by.book, title: by.title });
                 return false;
             }
             if (!pinnedUid.has(fold(e.name))) return true;
@@ -152,10 +182,11 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
         });
 
     // 2. One registry. A key held by two entities belongs to neither, unless
-    //    one of them is pinned, in which case the pin keeps it.
+    //    one of them is pinned or in another book, which keeps it.
     const holders = new Map(); // folded key -> Set of holder ids
     const hold = (k, id) => (holders.get(fold(k)) ?? holders.set(fold(k), new Set()).get(fold(k))).add(id);
     pinned.forEach((p, i) => (p.key ?? []).forEach((k) => hold(k, `pin:${i}`)));
+    active.forEach((f, i) => plainKeys(f.entry).forEach((k) => hold(k, `far:${i}`)));
     candidates.forEach((c, i) => c.keys.forEach((k) => hold(k, `new:${i}`)));
     // A bare title one entity claims ("Captain") is still contested when it is
     // a word in another entity's key ("Captain Hale") and not in its own name.
@@ -163,6 +194,7 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
     const keyWords = new Map(); // folded word -> holder ids whose multi-word keys contain it
     const addWords = (k, id) => words(k).length > 1 && words(k).forEach((w) => (keyWords.get(w) ?? keyWords.set(w, new Set()).get(w)).add(id));
     pinned.forEach((p, i) => (p.key ?? []).forEach((k) => addWords(k, `pin:${i}`)));
+    active.forEach((f, i) => plainKeys(f.entry).forEach((k) => addWords(k, `far:${i}`)));
     candidates.forEach((c, i) => c.keys.forEach((k) => addWords(k, `new:${i}`)));
     candidates.forEach((c, i) => {
         const own = new Set(words(c.name));
@@ -174,8 +206,10 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
     const contested = [...holders].filter(([, ids]) => ids.size > 1).map(([k]) => k);
     for (const c of candidates) {
         c.keys = c.keys.filter((k) => {
-            if (holders.get(fold(k)).size === 1) return true;
-            c.dropped.push({ key: k, reason: 'claimed by another entity' });
+            const ids = holders.get(fold(k));
+            if (ids.size === 1) return true;
+            const far = [...ids].find((id) => id.startsWith('far:'));
+            c.dropped.push({ key: k, reason: far ? `a key of '${active[far.slice(4)].entry.comment}' in '${active[far.slice(4)].book}'` : 'claimed by another entity' });
             return false;
         });
     }
@@ -226,6 +260,7 @@ export function compile(entities, messages, { pinned = [], uids = new Map(), nex
         ...shipped.map((c) => record(c.name, c.uid, { keys: c.keys, caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: c.anchor })),
         ...held.map((e) => record(e.name, pinnedUid.get(fold(e.name)), null)),
         ...gone.map((e) => record(e.name, uids.get(fold(e.name)), null)),
+        ...elsewhere.map((e) => ({ ...record(e.name, null, null), heldBy: e.heldBy })),
         ...unshipped.map((c) => record(c.name, null, { keys: [], caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: null })),
     ];
     const maxUid = Math.max(nextUid - 1, ...[...taken].filter(Number.isInteger));

@@ -33,6 +33,69 @@ function generateFor(c, profile) {
     return profileGenerate({ send, extract: (json) => c.extractMessageFromData(json, api), profileId: profile.id, log });
 }
 
+/** A slash command's piped result, or '' if it fails. */
+async function piped(c, command) {
+    try {
+        const out = await c.executeSlashCommandsWithOptions(command, { handleParserErrors: false, handleExecutionErrors: false });
+        return out?.isError ? '' : String(out?.pipe ?? '');
+    } catch {
+        return '';
+    }
+}
+
+const listOf = (text) => {
+    try {
+        const v = JSON.parse(text);
+        return Array.isArray(v) ? v.map(String).filter(Boolean) : text ? [String(v)] : [];
+    } catch {
+        return text ? [text] : [];
+    }
+};
+
+/** A card's embedded book (character_book, V2 spec) as World Info entries. Nothing is written back. */
+function embeddedEntries(book) {
+    return Object.fromEntries((book?.entries ?? []).map((e, i) => {
+        const uid = e.id ?? i;
+        return [String(uid), {
+            uid,
+            key: e.keys ?? [],
+            keysecondary: e.secondary_keys ?? [],
+            comment: e.comment || e.name || '',
+            content: e.content ?? '',
+            constant: !!e.constant,
+            disable: e.enabled === false,
+            caseSensitive: e.case_sensitive ?? null,
+        }];
+    }));
+}
+
+/**
+ * Every other lorebook active for the open chat, as SillyTavern's own World
+ * Info would read it: each character's linked and additional books and
+ * embedded card book (every member, in a group), the global worlds and the
+ * persona's book. Read through public calls only; never written. The chat's
+ * own book is dropped by the run (run.js otherBooks).
+ */
+async function activeBooks(c) {
+    const books = [];
+    const load = async (name, via) => {
+        if (!name || books.some((b) => b.name === name)) return;
+        if (!c.getWorldInfoNames().includes(name)) return;
+        const data = await c.loadWorldInfo(name);
+        books.push({ name, via, entries: structuredClone(data?.entries ?? {}) });
+    };
+    const members = c.groupId
+        ? (c.groups.find((g) => g.id == c.groupId)?.members ?? []).map((avatar) => c.characters.find((x) => x.avatar === avatar)).filter(Boolean)
+        : [c.characters[c.characterId]].filter(Boolean);
+    for (const ch of members) {
+        for (const name of [ch.data?.extensions?.world, ...listOf(await piped(c, `/getcharbook type=additional ${JSON.stringify(ch.avatar)}`))]) await load(name, `character ${ch.name}`);
+        if (ch.data?.character_book?.entries?.length) books.push({ name: `${ch.name}'s card (embedded)`, via: `character ${ch.name}`, entries: embeddedEntries(ch.data.character_book) });
+    }
+    for (const name of listOf(await piped(c, '/getglobalbooks'))) await load(name, 'global');
+    await load(c.powerUserSettings?.persona_description_lorebook, 'persona');
+    return books;
+}
+
 /** Everything a run needs from SillyTavern, for the chat open now. */
 function stFor(c, s, profile) {
     return {
@@ -53,6 +116,7 @@ function stFor(c, s, profile) {
             await c.saveWorldInfo(name, { entries: {} }, true);
             await c.updateWorldInfoList();
         },
+        otherBooks: () => activeBooks(c),
         saveMetadata: () => c.saveMetadata(),
         generate: generateFor(c, profile),
         // outputShare has no control in the panel: the live test sets it to
@@ -255,6 +319,7 @@ async function renderStatus(phase) {
         else parts.push(`<div class="canonkeeper-error">Failed: ${esc(last.error)}</div>`);
         if (state.ledger) parts.push(`<div>Ledger revision ${esc(state.ledger.revision)}, ${esc(state.ledger.messageCount)} messages, ${esc(state.ledger.scenes.length + 1)} scenes</div>`);
         if (state.ledger?.chunked) parts.push(`<div class="canonkeeper-chunked">Chunked build: read in ${esc(state.ledger.chunked.parts.length)} parts (${esc(state.ledger.chunked.parts.map((p) => `${p.from}–${p.to}`).join(', '))}), then reconciled. Not a one-shot result.</div>`);
+        if (last.books) parts.push(`<div>Other lorebooks consulted (read only): ${last.books.length ? last.books.map((b) => `${esc(b.name)} <small>(${esc(b.via ?? '?')}, ${esc(b.entries)} entries)</small>`).join(', ') : 'none'}</div>`);
         if (last.plan?.length) parts.push(`<details><summary>Writes (${last.plan.length})</summary><pre>${esc(last.plan.join('\n'))}</pre></details>`);
         if (last.held?.length) parts.push(`<details><summary>Held (${last.held.length})</summary><pre>${esc(last.held.map((h) => `${h.title}: ${h.reason}`).join('\n'))}</pre></details>`);
         if (last.review?.length) parts.push(`<details><summary>For review (${last.review.length})</summary><pre>${esc(last.review.map((r) => (typeof r === 'string' ? r : `${r.name ?? r.key ?? ''}: ${r.reason ?? JSON.stringify(r)}`)).join('\n'))}</pre></details>`);
@@ -301,6 +366,7 @@ function auditStatus(a, current) {
         return `<div class="canonkeeper-finding canonkeeper-${f.severity}" data-id="${esc(f.id)}"><span>${f.severity === 'error' ? '✖' : '⚠'} ${esc(f.check)}: ${esc(f.message)}</span>${f.held ? ` <small>(held: ${esc(f.held)})</small>` : ''}<div class="canonkeeper-row">${buttons}</div></div>`;
     };
     const parts = [`<div>${head}: ${esc(a.summary ?? '')}</div>`];
+    if (a.books?.length) parts.push(`<div><small>Also read for key clashes: ${esc(a.books.map((b) => b.name).join(', '))}</small></div>`);
     if (a.error) parts.push(`<div class="canonkeeper-error">Last audit failed: ${esc(a.error.message)}</div>`);
     if (!current && open.some((f) => f.fix)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
     if (open.length) parts.push(`<details open><summary>Review queue (${open.length})</summary>${open.map(line).join('')}</details>`);
@@ -437,7 +503,7 @@ function registerCommand() {
         name: 'canon',
         callback: async () => canon(),
         returns: 'a one-line summary of the run',
-        helpString: 'Canonkeeper: brings this chat\'s lorebook up to date with the story. The first run builds it; later runs re-read only what changed. Pinned and hand-edited entries are never touched.',
+        helpString: 'Canonkeeper: brings this chat\'s lorebook up to date with the story. The first run builds it; later runs re-read only what changed. Pinned and hand-edited entries are never touched, and the other active lorebooks (character, global, persona) are only read: what they already cover gets no second entry.',
     }));
     c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
         name: 'canon-audit',

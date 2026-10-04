@@ -3,7 +3,8 @@
 //
 //   1. The technical pass is plain code and makes no model call. It reads
 //      every enabled entry in the book, Canonkeeper's or not. It finds a key
-//      two entries claim, an entry with no keys, a key that fires on nearly
+//      two entries claim, a key shared with another active lorebook (the
+//      character's, global, the persona's), an entry with no keys, a key that fires on nearly
 //      every message, probability and recursion settings that stop an entry
 //      from firing, provenance that points nowhere, and an entry Canonkeeper
 //      wrote that has been deleted.
@@ -98,6 +99,45 @@ function collisions(entries, pinned, owned) {
         });
     }
     return out;
+}
+
+/**
+ * A key an entry here shares with an enabled entry of another active book
+ * (`foreign`, as { book, entry }): both fire together. The other book is
+ * never written, so the fix is always to this one. /canon gives up such a
+ * key on the entries it owns; a pin keeps it until a human chooses.
+ */
+function crossBook(entries, foreign, pinned, owned) {
+    const theirs = new Map(); // folded key -> [{ key, book, entry }]
+    for (const f of foreign) {
+        if (f.entry.disable || f.entry.constant) continue;
+        for (const k of new Set(keysOf(f.entry))) (theirs.get(fold(k)) ?? theirs.set(fold(k), []).get(fold(k))).push({ key: k, ...f });
+    }
+    const byKey = new Map(); // folded key -> { key, mine: [entry], theirs }
+    for (const e of entries) {
+        if (e.constant) continue;
+        for (const k of new Set(keysOf(e))) {
+            const other = (theirs.get(fold(k)) ?? []).filter((t) => !(e.caseSensitive && t.entry.caseSensitive && t.key !== k));
+            if (!other.length) continue;
+            const hit = byKey.get(fold(k)) ?? byKey.set(fold(k), { key: k, mine: [], theirs: other }).get(fold(k));
+            hit.mine.push(e);
+        }
+    }
+    return [...byKey].map(([folded, { key, mine, theirs: other }]) => {
+        const drop = mine.filter((e) => !pinned.has(e.uid) && !owned.has(e.uid));
+        const canon = mine.some((e) => owned.has(e.uid));
+        return {
+            id: `cross-book:${folded}`,
+            check: 'cross-book',
+            severity: 'error',
+            key,
+            uids: mine.map((e) => e.uid),
+            titles: mine.map(title),
+            books: [...new Set(other.map((t) => t.book))],
+            message: `'${key}' is a key of ${mine.map((e) => `'${title(e)}'`).join(', ')} here and of ${other.map((t) => `'${title(t.entry)}' in '${t.book}'`).join(', ')}: whenever it comes up, both are injected${canon ? '. Run /canon: it takes the key off its own entries' : ''}`,
+            fix: drop.length ? { op: 'drop-key', key, uids: drop.map((e) => e.uid), says: `remove '${key}' from ${drop.map((e) => `'${title(e)}'`).join(' and ')}` } : null,
+        };
+    });
 }
 
 /**
@@ -243,15 +283,17 @@ function deleted(book, ledger) {
 function missing(ledger) {
     if (!ledger) return [];
     return ledger.entities
-        .filter((e) => e.uid == null)
+        .filter((e) => e.uid == null && !e.heldBy)
         .map((e) => ({ id: `missing:${fold(e.name)}`, check: 'missing', severity: 'warning', uids: [], titles: [e.name], message: `'${e.name}' is in the story but has no entry: ${(e.compiled?.dropped ?? []).map((d) => `'${d.key}' ${d.reason}`).join('; ') || 'no usable key'}`, fix: null }));
 }
 
 /**
  * The deterministic pass. `ledger` may be null (a book with no Canonkeeper
  * history): then deleted entries can't be told from ones never written.
+ * `foreign` are the entries of the chat's other active books, as
+ * { book, entry }: read for key clashes, never audited or written.
  */
-export function technicalPass({ book, ledger = null, messages }) {
+export function technicalPass({ book, ledger = null, messages, foreign = [] }) {
     const entries = enabled(book);
     const pinned = new Set(entries.filter((e) => e.canonkeeper?.pinned).map((e) => e.uid));
     // Entries Canonkeeper wrote and nobody has touched since: /canon keeps
@@ -261,6 +303,7 @@ export function technicalPass({ book, ledger = null, messages }) {
     const current = !ledger || ledger.fingerprint === fingerprint(messages);
     return [
         ...collisions(entries, pinned, owned),
+        ...crossBook(entries, foreign, pinned, owned),
         ...overlaps(entries),
         ...noKeys(entries),
         ...overbroad(entries, messages, owned),
@@ -442,9 +485,9 @@ function claimFindings(claims, stale, verdicts, held) {
  * Returns the audit record: { version, at, fingerprint, bookHash, findings,
  * claims: { total, checked, stale, unchecked }, verdicts, calls, dismissed }.
  */
-export async function audit({ book, ledger = null, messages, generate = null, contextTokens, maxOutputTokens, previous = null, now = new Date() }) {
+export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, now = new Date() }) {
     if (!messages.length) throw new Error('empty transcript');
-    const technical = technicalPass({ book, ledger, messages });
+    const technical = technicalPass({ book, ledger, messages, foreign });
     const { claims, stale } = claimsOf({ book, ledger, messages });
     const live = new Set(claims.map((c) => c.id));
     let verdicts = Object.fromEntries(Object.entries(previous?.verdicts ?? {}).filter(([id]) => live.has(id)));
@@ -503,7 +546,7 @@ const noModel = async () => {
  * across the book. Returns { book, ledger, writes }: `writes` describes each
  * entry written, and `ledger` is unchanged for a book edit.
  */
-export async function accept({ book, ledger, messages, record, id }) {
+export async function accept({ book, ledger, messages, record, id, foreign = [] }) {
     const f = record.findings.find((x) => x.id === id);
     if (!f) throw new Error(`no finding '${id}' in the audit`);
     if (!f.fix) throw new Error(`finding '${id}' has no fix to accept`);
@@ -539,7 +582,7 @@ export async function accept({ book, ledger, messages, record, id }) {
         e.facts.splice(at, 1);
         if (!e.facts.length) next.entities = next.entities.filter((x) => x !== e);
     } else throw new Error(`unknown fix '${fix.op}'`);
-    const out = await update({ book, ledger: next, messages, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000 });
+    const out = await update({ book, ledger: next, messages, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000, foreign });
     return { book: out.book, ledger: out.ledger, writes: out.plan.map((o) => `${o.op} ${o.uid} '${o.title}'${o.fields ? ` (${o.fields.join(', ')})` : ''}`) };
 }
 

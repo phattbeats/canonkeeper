@@ -233,7 +233,18 @@ Install it from **Extensions → Install extension** with the repo URL, `https:/
 
 `/canon` takes no arguments. The first run on a chat builds the whole book, and every later run re-reads only what changed (see Re-runs). It writes to the lorebook bound to the chat. If the chat has none, it creates `Canonkeeper - <chat>` and binds it. A book you bound yourself is used as it is, and its own entries are held.
 
-The panel's status view shows the last run for the open chat: the summary, every write, the held entries and why, the review list and the run log. It also lists the book's Canonkeeper entries with a pin box each. A pinned entry is never changed.
+### Other lorebooks
+
+Canonkeeper writes only to the chat's book, but it reads every other lorebook active for the chat, as SillyTavern's World Info does. That means the character's linked and additional books and the card's embedded book (every member's, in a group), the global worlds and the persona's book. Those books are never written, and none of their entries is ever adopted: an entry Canonkeeper didn't write is yours.
+
+- **No second entry.** An entity gets no Canonkeeper entry when an enabled entry in another book has its title, or already holds one of its names as a key. A character-book entry titled "The Cartographer (Ines)" with the key `Ines Vell` covers Ines Vell. The skip goes on the review list with the other book's name and the entry's title. If the entity had an entry from an earlier run, that entry is removed.
+- **Their keys win.** The other books' keys win every key contest, like a pin's. A Canonkeeper entry never holds one of them, and it doesn't hold a bare word of one of their phrases either.
+- **Status and log.** The run log and the status view name the other books that were consulted.
+- **Audit.** A key the chat's book shares with an enabled entry in another book is a `cross-book` finding. The fix, when one is offered, removes the key from the chat book's entry. `/canon` takes such a key off its own entries itself.
+
+The books come from public calls only: `getContext()` for the characters, the group, the persona setting and `loadWorldInfo`, and the `/getglobalbooks` and `/getcharbook` commands for the global and additional books.
+
+The panel's status view shows the last run for the open chat: the summary, every write, the held entries and why, the other books consulted, the review list and the run log. It also lists the book's Canonkeeper entries with a pin box each. A pinned entry is never changed.
 
 How the adapter works:
 
@@ -253,6 +264,10 @@ ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0
 BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-live.mjs
 ```
 
+### The other-books run (`harness/live/st-books.mjs`)
+
+This is `st-live.mjs` with other books in play. Before the browser opens, it puts two worlds on the server. One is the character's own, linked to the card (SillyTavern also embeds it in the card), and holds "The Cartographer (Ines)" keyed `Ines Vell`. The other holds "The Drowned Lantern" and "The Harbor Chain", and the driver switches it on as a global world with `/world`. It reads each of those book files as text through SillyTavern's HTTP API before the first `/canon` and after each run. Then it gates the run with `--books`. Same environment as `st-live.mjs`.
+
 ## The acceptance gate
 
 ```bash
@@ -262,6 +277,7 @@ node harness/gate.js --run <run-dir>   # gate any builder's output
 node harness/gate.js --run <run-dir> --chunked   # a run on a window too small for the story
 node harness/gate.js --run <run-dir> --live      # a live session (harness/live-sim.js, st-session.mjs)
 node harness/gate.js --run <audit-dir> --audit   # an audit run (npm run build:audit, st-audit.mjs)
+node harness/gate.js --run <run-dir> --books     # a run with other active lorebooks (st-books.mjs)
 npm run build:audit                              # build, audit, plant, audit again, re-run, then gate --audit
 node harness/live-runs.js --model <id> --n 10     # n live one-shot builds, each gated, then a tally (below)
 ```
@@ -269,6 +285,8 @@ node harness/live-runs.js --model <id> --n 10     # n live one-shot builds, each
 With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's bar for a chunked run is I1–I6 plus K10, so C7 and C8 are scored and shown as `INFO` but don't gate it.
 
 With `--audit`, the run directory is an audit run (below), and the gate runs only A12 and A13: step 6's bar.
+
+With `--books`, the chat had other active lorebooks. The gate runs B14, and I1 and C7 score the chat's book and the other books together, so an entity another book covers counts as found, and only once.
 
 With `--live`, the gate also runs L11 on the run's `live.json`. Step 5's bar for a live session is I1–I6, C8 on the scene starts the detector found, and L11. The live book covers only the scenes that have ended, so C7 is shown as `INFO`.
 
@@ -294,6 +312,7 @@ The checks test properties and coverage, never wording. A builder that writes be
 | L11 | With `--live` only. The session's state store shows detection on a cadence: at most N/cadence detection calls for N messages, and every message judged except the few still waiting. At least one update ran, and each one brought the book up to a scene start the detector found, further than the one before. Per-message detection is red |
 | A12 | With `--audit` only. The audit of the planted book caught the collision on both entries, the deleted entry and every planted false fact (judged anything but supported). It verified at least one claim and changed nothing in the book, and a re-run left the deleted entry deleted. The plant itself is checked first: a missing plant is a fixture error |
 | A13 | With `--audit` only. The audit of the book as built has no technical finding, verified at least one claim, and flagged at most 15% of them |
+| B14 | With `--books` only. Every other book's file is byte-identical, as SillyTavern's HTTP API returns it, after each run. No entry in the chat's book is the same entity as an enabled entry in another book: neither one's title is the other's title or key, and they share no key |
 | K10 | With `--chunked` only. The run's `ledger.json` says it was built in parts: two or more parts that read every message exactly once, in order, and a reconciliation record. A one-shot run gated as chunked is red |
 
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
@@ -362,6 +381,7 @@ A builder's output for a transcript is a directory containing three files:
 - `book.json`: a SillyTavern World Info file (`{ "entries": { "<uid>": { ... } } }`). Each entry carries `canonkeeper: { "sources": [[from, to], ...], "pinned": bool }`. The ranges are inclusive message ids.
 - `rerun.json`: the book after re-running on the unchanged transcript, starting from `book.json` with its pins in place.
 - `scenes.json`: `{ "boundaries": [id, ...] }`, the ids of messages that start a new scene. Message 0 is excluded.
+- `others.json` (for `--books`): `{ "books": [{ "name", "via", "before", "after": [...] }] }`. `before` is each other book's file as text before the first run, and `after` holds the same file after each run.
 - `edits/<name>/book.json` (for `--edits`): `book.json` brought up to date with `fixtures/story/edits/<name>/transcript.jsonl`.
 
 An audit run (`--audit`) is a directory with `clean/audit.json`, the audit of the book as built, and `planted/`. That holds `planted.json` (the uids planted), `planted-book.json` (the book as planted, before the audit), `book.json` (the book after the audit), `audit.json` and `rerun.json` (the book after a re-run).

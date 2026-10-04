@@ -35,6 +35,11 @@
 //       and the audit itself wrote nothing (opt-in: for an audit run)
 //   A13 the audit raises no false alarm on the clean book: no technical
 //       finding, and few claims flagged (opt-in: for an audit run)
+//   B14 the other lorebooks active for the chat are read, never written:
+//       each file is byte-identical after every run, and no entity is in
+//       both the chat's book and another (same title, a title the other
+//       holds as a key, or a shared key) (opt-in: for a run with other
+//       books; I1 and C7 then score the books together)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -463,4 +468,23 @@ export function scoreC8Boundaries(predicted, expected, {
     const precision = hits / predicted.length;
     const recall = hits / expected.length;
     return result('C8', name, precision >= minPrecision && recall >= minRecall, { precision, recall, minPrecision, minRecall, unmatchedExpected: free });
+}
+
+// ── B14 ──────────────────────────────────────────────────────────────────────
+
+export function checkB14OtherBooks(book, others) {
+    const name = 'other active books unchanged, no entity in two books';
+    if (!others.length) return result('B14', name, false, { reason: 'no other book: nothing to check' });
+    const written = others.flatMap((b) => b.after.map((text, i) => ({ book: b.name, run: i + 1, text }))).filter((x) => x.text !== others.find((b) => b.name === x.book).before).map(({ book: b, run }) => ({ book: b, run }));
+    const names = (e) => new Set([e.title, ...e.keys].filter(Boolean).map(fold));
+    const duplicates = [];
+    for (const a of enabled(book)) {
+        for (const b of others.flatMap((o) => enabled(o.entries))) {
+            // As in I1: one key, unless both are case-sensitive and spell it differently.
+            const cs = (e) => e.caseSensitive ?? DEFAULTS.caseSensitive;
+            const shared = a.keys.filter((k) => b.keys.some((x) => x.toLowerCase() === k.toLowerCase() && !(cs(a) && cs(b) && x !== k)));
+            if (names(b).has(fold(a.title)) || names(a).has(fold(b.title)) || shared.length) duplicates.push({ uid: a.uid, title: a.title, book: b.book, other: b.title, shared });
+        }
+    }
+    return result('B14', name, !written.length && !duplicates.length, { books: others.map((b) => b.name), written, duplicates });
 }

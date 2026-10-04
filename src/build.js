@@ -75,18 +75,19 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
  * Returns { book, scenes, ledger }: `book` is a SillyTavern World Info file,
  * `scenes` the ids that start a new scene, and `ledger` the state a later run
  * starts from (what was built, from which text, and every decision made).
- * `pinned` entries are kept verbatim; `uids` and `nextUid` keep entities on
- * the uids they had (see compile).
+ * `pinned` entries are kept verbatim, `foreign` entries (other active books)
+ * are only read; `uids` and `nextUid` keep entities on the uids they had
+ * (see compile).
  */
-export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], uids, nextUid }) {
+export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], foreign = [], uids, nextUid }) {
     if (!messages.length) throw new Error('empty transcript');
     const budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
     const prompt = buildPrompt(messages, budget.output);
     const needed = estimateTokens(prompt.system + prompt.user);
-    if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, uids, nextUid });
+    if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, foreign, uids, nextUid });
 
     const reply = await ask(generate, prompt, budget.output, messages.length);
-    const compiled = compile(reply.entities, messages, { pinned, uids, nextUid });
+    const compiled = compile(reply.entities, messages, { pinned, foreign, uids, nextUid });
     return {
         book: toBook(compiled.entries),
         scenes: { boundaries: reply.scenes },

@@ -188,14 +188,14 @@ function merge(canon, found, previous, fresh, review, renamed) {
  * pinned entry and every entry Canonkeeper didn't write held, and entries
  * kept on their uids by title. Then the same diff as any other run.
  */
-async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare }) {
+async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign }) {
     const entries = Object.values(book.entries);
     const held = entries.filter((e) => e.canonkeeper?.pinned || !e.canonkeeper);
     const uids = new Map(entries.map((e) => [fold(e.comment ?? ''), e.uid]));
     const nextUid = Math.max(-1, ...entries.map((e) => e.uid)) + 1;
     let calls = 0;
     const counted = (req) => (calls++, generate(req));
-    const fresh = await build({ messages, generate: counted, contextTokens, maxOutputTokens, outputShare, pinned: held, uids, nextUid });
+    const fresh = await build({ messages, generate: counted, contextTokens, maxOutputTokens, outputShare, pinned: held, foreign, uids, nextUid });
     const ops = plan(book, Object.values(fresh.book.entries));
     return {
         book: apply(book, ops),
@@ -212,15 +212,17 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
  * Brings `book` up to date with `messages`. `starts`, in live mode, are the
  * scene starts the detector found: they decide which scenes are re-read and
  * are what the ledger records, and the model's own scene starts are unused.
+ * `foreign` are the enabled entries of the chat's other active books, as
+ * { book, entry }: read, never written (see compile).
  *
  * Returns { book, scenes, ledger, plan, held, calls, wrote }: `plan` is the
  * list of writes made (empty means none), `held` the entries kept as they
  * were and why, `calls` the model calls made. The input book is not mutated.
  */
-export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare, starts }) {
+export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare, starts, foreign = [] }) {
     if (!messages.length) throw new Error('empty transcript');
     if (ledger?.version !== LEDGER_VERSION) {
-        const out = await rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare });
+        const out = await rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign });
         return starts ? withScenes(out, starts, messages.length) : out;
     }
 
@@ -287,7 +289,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
     }
 
     if (starts) scenes = sceneStarts(starts, messages.length);
-    const compiled = compile(canon, messages, { pinned: kept, uids, nextUid: ledger.nextUid, deleted });
+    const compiled = compile(canon, messages, { pinned: kept, foreign, uids, nextUid: ledger.nextUid, deleted });
     const ops = plan(book, compiled.entries);
     return {
         book: apply(book, ops),
