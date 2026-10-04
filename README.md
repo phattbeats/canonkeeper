@@ -4,7 +4,7 @@ Canonkeeper turns a SillyTavern roleplay chat into a correct, self-maintaining W
 
 It's a clean-room build. It's written from its own spec and SillyTavern's public APIs and lorebook format, and not from any other extension's code.
 
-**Status: build step 2 (re-run semantics, offline).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). There's no SillyTavern adapter yet (step 3), so it runs from the command line.
+**Status: build step 3 (SillyTavern adapter).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). The command line still works for offline runs.
 
 ## The one-shot core (`src/`)
 
@@ -58,6 +58,26 @@ The ledger (`ledger.json`, versioned, one per chat) is the state, and the lorebo
 An unchanged transcript makes no model call and compiles to the book it already has: an empty plan, zero writes. A held entity's canon still follows the story, so when the pin comes off, the next run brings the entry up to date. A ledger from step 1 (version 1), or no ledger, means one full rebuild with pins and foreign entries held and entries kept on their uids by title.
 
 `harness/compare.js` scores a built book against a hand-curated one for real chats that have no answer key. Real chats stay out of the repo: put them under `local/`, which is gitignored.
+
+## In SillyTavern (`adapter/`, `/canon`)
+
+Install it from **Extensions → Install extension** with the repo URL, `https://github.com/phattbeats/canonkeeper`. The repo is private, so the SillyTavern server needs git access to it. Then:
+
+1. Make a connection profile (Connection Profiles, under API Connections) for the model that should write the lorebook. Chat Completion and Text Completion profiles both work.
+2. Under **Extensions → Canonkeeper**, pick that profile and set the model's context window. Max output defaults to 64k.
+3. Open a chat and type `/canon`, or press **Run /canon** in the panel.
+
+`/canon` takes no arguments. The first run on a chat builds the whole book, and every later run re-reads only what changed (see Re-runs). It writes to the lorebook bound to the chat. If the chat has none, it creates `Canonkeeper - <chat>` and binds it. A book you bound yourself is used as it is, and its own entries are held.
+
+The panel's status view shows the last run for the open chat: the summary, every write, the held entries and why, the review list and the run log. It also lists the book's Canonkeeper entries with a pin box each. A pinned entry is never changed.
+
+How the adapter works:
+
+- Everything comes through `SillyTavern.getContext()`: the chat, `loadWorldInfo` and `saveWorldInfo`, and `ConnectionManagerRequestService` for the model call. No SillyTavern file is imported, so the install location doesn't matter.
+- `adapter/run.js` is the run, with SillyTavern injected, and the tests run it against a fake SillyTavern. Only the plan's writes reach the book. If the chat is switched or the book changes while the model is working, nothing is written and the run says so.
+- The ledger and a record of the last run, including its log, are kept in `chat_metadata.canonkeeper`. They are saved in the chat file, so they travel with the chat and can be read from outside the page.
+- The model call skips the profile's generation preset, so a roleplay preset's prompts don't reach the lorebook writer. A reply cut off at the output limit counts as a bad reply.
+- The call isn't streamed. A reply that takes longer than the server's HTTP timeout fails the run, which matters for long stories (step 4).
 
 ## The acceptance gate
 

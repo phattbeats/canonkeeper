@@ -157,6 +157,28 @@ async function setPin(bookName, uid, pinned) {
     renderStatus();
 }
 
+/**
+ * The profile list, rebuilt from scratch whenever a profile is created,
+ * changed or deleted, so a profile made after install shows up at once.
+ */
+function renderProfiles() {
+    const c = ctx();
+    const select = document.getElementById('canonkeeper_profile');
+    if (!select) return;
+    let profiles;
+    try {
+        profiles = c.ConnectionManagerRequestService.getSupportedProfiles();
+    } catch (err) {
+        select.innerHTML = `<option value="">${esc(err.message)}: enable Connection Profiles</option>`;
+        return;
+    }
+    const chosen = settings().profileId;
+    const options = [...profiles].sort((a, b) => a.name.localeCompare(b.name))
+        .map((p) => `<option value="${esc(p.id)}" ${p.id === chosen ? 'selected' : ''}>${esc(p.name)}</option>`);
+    const missing = chosen && !profiles.some((p) => p.id === chosen) ? '<option value="" selected>(the chosen profile is gone: pick another)</option>' : '';
+    select.innerHTML = `<option value="" ${chosen ? '' : 'selected'}>Pick a connection profile</option>${missing}${options.join('')}`;
+}
+
 function mountSettings() {
     const c = ctx();
     const s = settings();
@@ -171,13 +193,13 @@ function mountSettings() {
         this.value = s.maxOutputTokens;
         c.saveSettingsDebounced();
     });
-    try {
-        c.ConnectionManagerRequestService.handleDropdown('#canonkeeper_profile', s.profileId, (profile) => {
-            s.profileId = profile?.id ?? '';
-            c.saveSettingsDebounced();
-        });
-    } catch (err) {
-        $('#canonkeeper_profile').replaceWith(`<div class="canonkeeper-error">${esc(err.message)}. Enable the Connection Profiles extension.</div>`);
+    $('#canonkeeper_profile').on('change', function () {
+        s.profileId = String(this.value);
+        c.saveSettingsDebounced();
+    });
+    renderProfiles();
+    for (const event of ['CONNECTION_PROFILE_CREATED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']) {
+        if (c.eventTypes[event]) c.eventSource.on(c.eventTypes[event], () => setTimeout(renderProfiles));
     }
     $('#canonkeeper_run').on('click', () => canon().catch(() => {}));
     renderStatus();
