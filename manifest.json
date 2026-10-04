@@ -6,7 +6,7 @@
     "js": "adapter/index.js",
     "css": "adapter/style.css",
     "author": "phattbeats",
-    "version": "0.3.0",
+    "version": "0.5.0",
     "homePage": "https://github.com/phattbeats/canonkeeper",
     "auto_update": false
 }

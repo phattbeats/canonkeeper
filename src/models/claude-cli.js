@@ -3,6 +3,7 @@
 // supply its own `generate` from the user's connection profile instead.
 
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 
 export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
     return ({ system, user, maxTokens }) =>
@@ -10,7 +11,9 @@ export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
             const args = ['-p', '--model', model, '--system-prompt', system, '--tools', '', '--output-format', 'json', '--no-session-persistence'];
             // Thinking would spend the output budget the lorebook needs.
             const env = { ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens), MAX_THINKING_TOKENS: '0' };
-            const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+            // Run outside the repo, so the CLI loads no project instructions or
+            // memory: the model sees only our prompt.
+            const child = spawn(bin, args, { env, cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] });
             let out = '';
             let err = '';
             child.stdout.on('data', (d) => (out += d));

@@ -22,6 +22,10 @@
 //   K10 a run built in parts says so: its ledger records two or more parts
 //       that read every message exactly once, in order, and a reconciliation
 //       pass (opt-in: for a story that doesn't fit the window)
+//   L11 live mode runs on a cadence and an edge: N messages took at most
+//       N/cadence detection calls, every message was judged, and each update
+//       followed a scene start the detector found, once, in order (opt-in:
+//       for a live session)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -181,6 +185,36 @@ export function checkK10Chunked(ledger, messageCount) {
     if (next !== messageCount) problems.push(`parts end at ${next - 1}, the story at ${messageCount - 1}`);
     if (!ck.reconciliation || typeof ck.reconciliation.ran !== 'boolean') problems.push('no reconciliation record');
     return result('K10', name, !problems.length, { parts: ck.parts.map((p) => [p.from, p.to]), reconciliation: ck.reconciliation ?? null, problems });
+}
+
+// ── L11 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * `live` is the session's live.json: the live state store plus the cadence
+ * it ran at and the number of messages written. Detection must fire per
+ * `cadence` messages, not per message, and judge every message but the few
+ * still waiting at the end (the newest is only ever look-ahead). An update fires on an edge: each one brings the
+ * book up to a scene start the detector found, further than the one before.
+ */
+export function checkL11Live(live, messageCount) {
+    const name = 'live mode: detection on a cadence, updates on scene ends';
+    if (!live || !Array.isArray(live.cycles) || !live.cycles.length) return result('L11', name, false, { reason: 'no live cycles recorded' });
+    const cadence = live.cadence;
+    if (!(Number.isInteger(cadence) && cadence > 0)) return result('L11', name, false, { reason: 'no cadence recorded' });
+    const problems = [];
+    const budget = Math.ceil(messageCount / cadence);
+    if (!(live.detectCalls > 0)) problems.push('no detection calls');
+    if (live.detectCalls > budget) problems.push(`${live.detectCalls} detection calls for ${messageCount} messages; at most ${budget} at cadence ${cadence}`);
+    const judged = live.hashes?.length ?? 0;
+    // The newest message is look-ahead, so up to `cadence` can be waiting.
+    if (judged > messageCount || judged < messageCount - cadence) problems.push(`${judged} of ${messageCount} messages judged`);
+    const updates = live.cycles.filter((c) => c.update?.ok).map((c) => c.update.through);
+    if (!updates.length) problems.push('no update ran');
+    updates.forEach((t, i) => {
+        if (!live.starts.includes(t + 1)) problems.push(`an update through ${t} does not end at a scene start`);
+        if (i && t <= updates[i - 1]) problems.push(`an update through ${t} after one through ${updates[i - 1]}`);
+    });
+    return result('L11', name, !problems.length, { detectCalls: live.detectCalls, budget, judged, updates, problems });
 }
 
 // ── E9 ───────────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ Canonkeeper turns a SillyTavern roleplay chat into a correct, self-maintaining W
 
 It's a clean-room build. It's written from its own spec and SillyTavern's public APIs and lorebook format, and not from any other extension's code.
 
-**Status: build step 4 (chunked fallback).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). The command line still works for offline runs.
+**Status: build step 5 (live mode).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). With live mode on, the book keeps up while you play: a cheap model notices when a scene ends, and the scene that ended goes through step 2's update (step 5). The command line still works for offline runs.
 
 ## The one-shot core (`src/`)
 
@@ -49,6 +49,70 @@ When the one-call prompt won't fit the window, `build` reads the story in parts 
 The output is flagged. `ledger.chunked` records each part (`from`, `to`, the context shown, the prompt estimate), the reconciliation and its merges, and the number of calls. It stays on the ledger through later re-runs. The CLI prints `CHUNKED: ...`, and `/canon` says so in its summary and status view. A chunked book is never presented as a one-shot result.
 
 Re-runs work the same way on a chunked ledger as on a one-shot one.
+
+## Live mode (`src/live.js`)
+
+With live mode on, nobody has to type `/canon`: the book keeps up while the chat is written. Two triggers drive it, and each fires once.
+
+1. **Detection runs on a cadence.** Once `cadence` messages (4 by default) are waiting to be judged, one call to a cheap model reads them and reports where new scenes start. It also sees the open scene before them as context, and the newest message after them. A message arriving doesn't make a call. A call is made once enough messages have arrived. So N messages make about N/cadence calls, not N. Every message is judged once.
+2. **The update runs on an edge.** A scene start means the scene before it has ended. When the end of the last finished scene moves forward, the transcript up to that point goes to step 2's `update()`, with the detector's scene starts. Only the scenes that are new or changed are re-read. The open scene waits until it ends. The first update on a chat without a ledger is a full build of the finished scenes.
+
+What the detector is asked:
+
+- **The newest message is look-ahead.** It's shown after the messages being judged, and judged in the next call. Without it, the end of a scene ("she sets off up the cliff road") read with nothing after it looked like a cut. Then the cut landed one or two messages early, in 3 of 3 runs.
+- **A cut is a message that doesn't pick up where the one before it left off.** The story skips ahead in time, or moves somewhere else and leaves out the journey. A bracketed narrator header marks a new scene. A message that carries straight on is the same scene, however far the characters go: a reply, the next action, or the story following them down a stair and out to a boat. The detector names what each cut leaves out. Asking "where does a new scene start?" instead split the fixture's escape (messages 71–80) in 2 of 3 runs. Rewording that question only moved the false starts around.
+- **Strict JSON, one retry.** An id outside the judged range is ignored.
+
+Other behaviour:
+
+- **Failures back off.** A failed detection, or a failed update, is tried again after another `cadence` messages, not on every message. A failed update writes nothing, as with `/canon`.
+- **Edits are followed.** When a judged message is edited, swiped or deleted, it is judged again along with everything after it. If it sat in a finished scene, the book follows the edit at the next tick.
+- **Live mode picks up after a `/canon` run.** If the chat's ledger covers an unchanged start of the chat, that part counts as judged and its scene starts as found.
+- **The story is never touched.** A tick waits while SillyTavern is writing a reply, and a message is judged only once it's complete. The detector uses its own connection profile, never the roleplay one.
+
+**The state store** is `chat_metadata.canonkeeper.live`, saved in the chat file next to the ledger. It survives reloads and can be read from outside the page. It holds:
+
+- a hash of every judged message (the watermark);
+- the scene starts;
+- `detectCalls` and `updates`;
+- `cycles`, the last 200 ticks that did anything. Each cycle records what was judged and found, and which update ran through which message, with how many writes or what error.
+
+A tick with nothing due makes no call and saves nothing.
+
+In SillyTavern, live mode is under **Extensions → Canonkeeper**. It has a **Live mode** box, a **Scene detection profile** (defaults to the writer's profile; a cheap fast model is the point), **Check every** (the cadence) and the detector's context window. The status view shows the state store: messages judged, scene starts, call counts and the recent cycles.
+
+### Measured on the fixture
+
+The detector was scored against the answer key's 7 scene starts at ±1, on 81 messages. Most runs used `harness/live-sim.js --detect-only`; the full sessions also ran the writer. The final prompt was used throughout:
+
+| Detector | Cadence | Runs | Detection calls | Precision | Recall |
+|---|---|---|---|---|---|
+| claude-haiku-4-5 | 4 | 9 (8 detection-only, 1 full session) | 20 | 1.0 in 9 of 9 | 1.0 in 9 of 9 |
+| claude-haiku-4-5 | 6 | 1 | 13 | 1.0 | 1.0 |
+| claude-haiku-4-5 | 2 | 1 | 40 | 0.78 (extra starts at 73, 79) | 1.0 |
+| claude-sonnet-5 | 4 | 2 | 20 | 0.54, 0.78 | 1.0 |
+
+- **Sonnet as the detector splits more than Haiku**, so the cheap model is also the better detector here.
+- **Smaller batches are worse.** At cadence 2 each call sees too little to compare.
+- **Earlier prompts did worse.** Before look-ahead, Haiku had one false start in 36–39 in 3 of 3 runs. With look-ahead but the "where does a scene start?" question, 2 of 3 runs had a false start in the escape.
+
+In the full session, the writer was claude-sonnet-5. Live mode made 7 updates, one per scene end, and the book passed I1–I6. Its C7 (shown, not gated) found every required entity at 0.95 precision. One entity was split, though. The story calls Dovrin Kesh "the Magistrate" in the first scene and names him later. The update reads one scene at a time and reported Kesh as new, instead of renaming the epithet's entity the way the chunked fallback does. That entry then also took the Magistrate's Hall as a key.
+
+```bash
+node harness/live-sim.js fixtures/story/transcript.jsonl --out .run/live [--detect-model claude-haiku-4-5-20251001] [--model claude-sonnet-5] [--cadence 4] [--detect-only]
+npm run build:live     # replay the recorded session, then gate it with --live
+```
+
+`harness/live-sim.js` writes the story into a fake SillyTavern one message at a time and runs the adapter's own tick (`runLive`) after each, as the extension does. It writes a run directory: the book live mode kept, the detector's scene starts, the ledger, `live.json` (the state store) and the replies of both models, for `--replay`.
+
+### The live session run (`harness/live/st-session.mjs`)
+
+This drives a fresh SillyTavern through a real browser for the whole fixture story: 40 turns (one per user line) with no reload. It installs the extension from the repo URL and makes two connection profiles, the writer (claude-sonnet-5) and the detector (claude-haiku-4-5). It ticks **Live mode** in the panel. Then it types each of the story's user lines into the chat box and sends it. The narrator's replies come from real SillyTavern generations, served by a small OpenAI-compatible endpoint in the driver that answers with the story's next narrator message. So the chat comes out as the fixture, and its scene starts can be scored against the answer key. Every check reads SillyTavern's HTTP API from outside the page: the state store in the chat file, the lorebook file, and that the page's origin never changed. It writes `session.log`, screenshots and a run directory, then gates it with `--live`.
+
+```bash
+ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0.1:8000 \
+BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-session.mjs
+```
 
 ## Re-runs (`src/update.js`, `src/plan.js`, `src/align.js`)
 
@@ -113,9 +177,12 @@ npm test        # unit tests: every check is shown red on a broken book
 npm run gate    # the gate on the hand-built reference run: must be green
 node harness/gate.js --run <run-dir>   # gate any builder's output
 node harness/gate.js --run <run-dir> --chunked   # a run on a window too small for the story
+node harness/gate.js --run <run-dir> --live      # a live session (harness/live-sim.js, st-session.mjs)
 ```
 
 With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's bar for a chunked run is I1–I6 plus K10, so C7 and C8 are scored and shown as `INFO` but don't gate it.
+
+With `--live`, the gate also runs L11 on the run's `live.json`. Step 5's bar for a live session is I1–I6, C8 on the scene starts the detector found, and L11. The live book covers only the scenes that have ended, so C7 is shown as `INFO`.
 
 | Exit code | Meaning |
 |---|---|
@@ -136,6 +203,7 @@ The checks test properties and coverage, never wording. A builder that writes be
 | C7 | Coverage against the answer key. Recall on required entities must be 1.0 and precision at least 0.8. It also fails on any split entity, any entry that merges two entities, any entry that never fires on its own entity's mentions, any case-trap decoy that fires, or any claim on a contested key |
 | C8 | Scene boundaries at ±1 message, with precision and recall both at least 0.9 |
 | E9 | With `--edits` only. For each edit fixture, the run's updated book changes only entries of the edited scene: entries that cite a message there, or whose keys fire there before or after the edit. A pinned entry may not change at all, and an edit that changes nothing is red. A missing update output is a fixture error |
+| L11 | With `--live` only. The session's state store shows detection on a cadence: at most N/cadence detection calls for N messages, and every message judged except the few still waiting. At least one update ran, and each one brought the book up to a scene start the detector found, further than the one before. Per-message detection is red |
 | K10 | With `--chunked` only. The run's `ledger.json` says it was built in parts: two or more parts that read every message exactly once, in order, and a reconciliation record. A one-shot run gated as chunked is red |
 
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
@@ -154,6 +222,7 @@ The fixture story is *The Saltwind Chart*. It's an invented 81-message story wit
 | `broken-collision/` | The reference with the planted collision left unresolved. CI requires the gate to go red on it |
 | `recorded/replies.json` | A full-build reply recorded from a real model run, replayed in CI |
 | `chunked/replies.json` | The replies recorded from a real chunked build (claude-sonnet-5) with `--context 10000 --output-share 0.5`: four parts (two of them handed an unfinished scene to the next) and a reconciliation. Part 3 renamed "the cartographer" to Ines Vell. It passes I1–I6 and K10. C7 misses the Drowned Lantern and the Gull's Errand, which no part listed. Replayed in CI |
+| `live/` | The replies recorded from a real live session (`harness/live-sim.js`): the detector's (claude-haiku-4-5) and the writer's (claude-sonnet-5). `npm run build:live` replays them through the adapter's tick and gates the result with `--live`. Replayed in CI |
 | `edits/undercroft/` | The story with one scene (20–29) edited. Message 20 changes who cut the Undercroft (the Brine Kings), and message 22 adds a new character (Fennick Rye). `replies.json` is the update reply recorded from a real model run (claude-sonnet-5) |
 
 The story plants three cases for the checks to catch:

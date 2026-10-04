@@ -28,7 +28,9 @@ jobs:
             fixtures/story/recorded/replies.json \
             fixtures/story/edits/undercroft/transcript.jsonl \
             fixtures/story/edits/undercroft/replies.json \
-            fixtures/story/chunked/replies.json
+            fixtures/story/chunked/replies.json \
+            fixtures/story/live/detect-replies.json \
+            fixtures/story/live/write-replies.json
 
       # The gate steps below run even if the tests fail, so each signal is
       # reported on its own.
@@ -55,6 +57,14 @@ jobs:
       - name: Gate on a chunked build must be green
         if: ${{ !cancelled() }}
         run: npm run build:chunked
+
+      # Live mode: the story written one message at a time through the
+      # adapter's own tick, replayed from a real session (a cheap detector and
+      # the writer). C8 on the detector's scene starts, I1-I6 on the book it
+      # kept, and L11: detection on a cadence, updates on scene ends.
+      - name: Gate on a live session must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:live
 
       # K10 has to be able to fail: the one-shot run above must not pass as
       # chunked. Exit 1 (red) is required.

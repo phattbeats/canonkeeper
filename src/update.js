@@ -50,6 +50,15 @@ function remapScenes(boundaries, toNew, count) {
     return [...new Set(out.filter((b) => b > 0 && b < count))].sort((a, b) => a - b);
 }
 
+/** Scene starts handed in (live mode), inside the transcript. */
+const sceneStarts = (starts, count) => [...new Set(starts.filter((b) => b > 0 && b < count))].sort((a, b) => a - b);
+
+/** A rebuild's result with the scene starts handed in instead of the model's. */
+function withScenes(out, starts, count) {
+    const scenes = sceneStarts(starts, count);
+    return { ...out, scenes: { boundaries: scenes }, ledger: { ...out.ledger, scenes } };
+}
+
 /** The whole scenes, as inclusive [from, to] ids, that contain a dirty id. */
 export function windowsFor(dirty, boundaries, count) {
     const starts = [0, ...boundaries.filter((b) => b > 0 && b < count)];
@@ -147,15 +156,20 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
 }
 
 /**
- * Brings `book` up to date with `messages`.
+ * Brings `book` up to date with `messages`. `starts`, in live mode, are the
+ * scene starts the detector found: they decide which scenes are re-read and
+ * are what the ledger records, and the model's own scene starts are unused.
  *
  * Returns { book, scenes, ledger, plan, held, calls, wrote }: `plan` is the
  * list of writes made (empty means none), `held` the entries kept as they
  * were and why, `calls` the model calls made. The input book is not mutated.
  */
-export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare }) {
+export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare, starts }) {
     if (!messages.length) throw new Error('empty transcript');
-    if (ledger?.version !== LEDGER_VERSION) return rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare });
+    if (ledger?.version !== LEDGER_VERSION) {
+        const out = await rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare });
+        return starts ? withScenes(out, starts, messages.length) : out;
+    }
 
     const held = heldEntries(book, ledger.written);
     const kept = held.map((h) => h.entry);
@@ -168,7 +182,8 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
 
     if (fingerprint(messages) !== ledger.fingerprint) {
         const { toNew, fresh, dirty } = align(ledger.hashes, messages);
-        scenes = remapScenes(ledger.scenes, toNew, messages.length);
+        // In live mode the detector found the scene starts (live.js).
+        scenes = starts ? sceneStarts(starts, messages.length) : remapScenes(ledger.scenes, toNew, messages.length);
         const windows = windowsFor(dirty, scenes, messages.length);
         const inWindow = (id) => windows.some(([a, b]) => id >= a && id <= b);
 
@@ -188,7 +203,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
             }
             e.facts = facts;
         }
-        scenes = scenes.filter((b) => !windows.some(([a, z]) => b > a && b <= z));
+        if (!starts) scenes = scenes.filter((b) => !windows.some(([a, z]) => b > a && b <= z));
 
         if (windows.length) {
             budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
@@ -201,12 +216,13 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
             const reply = await ask(counted, prompt, budget.output, messages.length);
             calls = n;
             review.push(...reply.review);
-            scenes = [...new Set([...scenes, ...reply.scenes.filter(inWindow)])].sort((a, b) => a - b);
+            if (!starts) scenes = [...new Set([...scenes, ...reply.scenes.filter(inWindow)])].sort((a, b) => a - b);
             merge(canon, reply.entities, previous, new Set(fresh), review);
         }
         canon = canon.filter((e) => e.facts.length).map(({ slot, ...e }) => e);
     }
 
+    if (starts) scenes = sceneStarts(starts, messages.length);
     const compiled = compile(canon, messages, { pinned: kept, uids, nextUid: ledger.nextUid });
     const ops = plan(book, compiled.entries);
     return {

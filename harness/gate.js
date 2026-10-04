@@ -5,8 +5,12 @@
 // With --chunked (a run on a window too small for the story) it also runs
 // K10 on the run's ledger.json. The step 4 bar for a chunked run is the
 // invariants plus K10, so C7 and C8 are then scored and shown but don't gate.
+// With --live (a session from harness/live-sim.js) it also runs L11 on the
+// run's live.json. The step 5 bar is the invariants, C8 on the scene starts
+// the detector found, and L11. The live book only covers the scenes that have
+// ended, so C7 is scored and shown but doesn't gate.
 //
-//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--json]
+//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--json]
 //
 // Exit codes: 0 every check green · 1 at least one check red ·
 //             2 fixtures missing or malformed (never a pass)
@@ -14,7 +18,7 @@
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, FixtureError } from './load.js';
+import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, loadLive, FixtureError } from './load.js';
 import {
     validateAnswerKey,
     checkI1KeywordCollisions,
@@ -27,9 +31,10 @@ import {
     scoreC8Boundaries,
     checkE9EditLocality,
     checkK10Chunked,
+    checkL11Live,
 } from './checks.js';
 
-export function runGate({ storyDir, runDir, edits = false, chunked = false }) {
+export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false }) {
     const messages = loadTranscript(join(storyDir, 'transcript.jsonl'));
     const key = loadAnswerKey(join(storyDir, 'answer-key.json'));
     const run = loadRun(runDir);
@@ -44,10 +49,11 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false }) {
         checkI4Provenance(run.book, messages),
         checkI5ZeroWritesOnRerun(run.book, run.rerun),
         checkI6PinsSurvive(run.book, run.rerun),
-        { ...scoreC7Coverage(run.book, key, messages), ...(chunked ? { gates: false } : {}) },
+        { ...scoreC7Coverage(run.book, key, messages), ...(chunked || live ? { gates: false } : {}) },
         { ...scoreC8Boundaries(run.boundaries, key.boundaries), ...(chunked ? { gates: false } : {}) },
     ];
     if (chunked) checks.push(checkK10Chunked(loadLedger(runDir), messages.length));
+    if (live) checks.push(checkL11Live(loadLive(runDir), messages.length));
     if (edits) {
         for (const e of loadEdits(storyDir, runDir)) checks.push({ ...checkE9EditLocality(run.book, e.book, messages, e.transcript, key.boundaries), edit: e.name });
     }
@@ -55,13 +61,14 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false }) {
 }
 
 function parseArgs(argv) {
-    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, json: false };
+    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, json: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--story') args.story = argv[++i];
         else if (argv[i] === '--run') args.run = argv[++i];
         else if (argv[i] === '--json') args.json = true;
         else if (argv[i] === '--edits') args.edits = true;
         else if (argv[i] === '--chunked') args.chunked = true;
+        else if (argv[i] === '--live') args.live = true;
         else throw new FixtureError(`unknown argument: ${argv[i]}`);
     }
     args.run ??= join(args.story, 'reference');
@@ -73,7 +80,7 @@ function main() {
     let args;
     try {
         args = parseArgs(process.argv.slice(2));
-        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked });
+        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live });
     } catch (err) {
         if (!(err instanceof FixtureError)) throw err;
         console.error(`FIXTURE ERROR: ${err.message}`);

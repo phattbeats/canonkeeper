@@ -96,6 +96,11 @@ export function loadLedger(dir) {
     return readJson(join(dir, 'ledger.json'));
 }
 
+/** The run's live.json (a live session's state store), which only --live asks for. */
+export function loadLive(dir) {
+    return readJson(join(dir, 'live.json'));
+}
+
 /**
  * Edit fixtures: `<story>/edits/<name>/transcript.jsonl`, the story with one
  * scene edited. A run answers each with `<run>/edits/<name>/book.json`, its
