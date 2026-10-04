@@ -13,16 +13,28 @@ export const MAX_FIRE_FRACTION = 0.8;
 const fold = (s) => s.toLowerCase();
 
 /**
- * A capitalised key needs case-sensitive matching when the story also uses
- * the same word in lower case: that's an ordinary word, not this entity
- * (Wren the runner vs. a wren on the windowsill).
+ * A capitalised one-word key needs case-sensitive matching when the story
+ * also uses the same word in lower case: that's an ordinary word, not this
+ * entity (Wren the runner vs. a wren on the windowsill). Phrases don't count:
+ * "the prophecy" mid-sentence is still The Prophecy.
  */
 function needsCase(key, messages) {
     const lower = key.toLowerCase();
-    return lower !== key && spellings(key, messages).includes(lower);
+    return !/\s/.test(key) && lower !== key && spellings(key, messages).includes(lower);
 }
 
-const capitalise = (k) => k.charAt(0).toUpperCase() + k.slice(1);
+const ARTICLE = /^(the|a|an)\s/i;
+
+/**
+ * Spellings a case-sensitive entry still has to match: a lower-case epithet
+ * at the start of a sentence, and "the Tailor" vs "The Tailor".
+ */
+function caseVariants(key) {
+    const up = key.charAt(0).toUpperCase() + key.slice(1);
+    const down = key.charAt(0).toLowerCase() + key.slice(1);
+    if (key === key.toLowerCase()) return [up];
+    return ARTICLE.test(key) ? [up, down] : [];
+}
 
 /** Sorted inclusive [from, to] ranges covering a set of message ids. */
 export function toRanges(ids) {
@@ -78,7 +90,8 @@ export function compile(entities, messages, { pinned = [] } = {}) {
         .map((e) => {
             const dropped = [];
             const seen = new Map();
-            for (const k of [e.name, ...e.keys]) if (!seen.has(fold(k))) seen.set(fold(k), k);
+            // The model's own spelling wins over the title's capitalisation.
+            for (const k of [...e.keys, e.name]) if (!seen.has(fold(k))) seen.set(fold(k), k);
             let keys = [...seen.values()].filter((k) => {
                 if (firesOn(k, false, messages).length) return true;
                 if (k !== e.name) dropped.push({ key: k, reason: 'not in the transcript' });
@@ -86,10 +99,8 @@ export function compile(entities, messages, { pinned = [] } = {}) {
             });
             const caseSensitive = e.caseSensitive || keys.some((k) => needsCase(k, messages));
             if (caseSensitive) {
-                // A lower-case epithet still has to match at the start of a sentence.
                 for (const k of [...keys]) {
-                    const cap = capitalise(k);
-                    if (cap !== k && !keys.includes(cap) && firesOn(cap, true, messages).length) keys.push(cap);
+                    for (const v of caseVariants(k)) if (v !== k && !keys.includes(v) && firesOn(v, true, messages).length) keys.push(v);
                 }
                 keys = keys.filter((k) => {
                     if (firesOn(k, true, messages).length) return true;

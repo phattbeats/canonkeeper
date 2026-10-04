@@ -51,12 +51,17 @@ async function main() {
         const messages = parseTranscript(readFileSync(transcript, 'utf8'));
         const replies = [];
         const started = Date.now();
-        const out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context });
         mkdirSync(args.dir, { recursive: true });
+        let out;
+        try {
+            out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context });
+        } finally {
+            // Kept even when the run fails, so a rejected reply can be inspected.
+            writeJson(join(args.dir, 'replies.json'), replies);
+        }
         writeJson(join(args.dir, 'book.json'), out.book);
         writeJson(join(args.dir, 'scenes.json'), out.scenes);
         writeJson(join(args.dir, 'ledger.json'), out.ledger);
-        writeJson(join(args.dir, 'replies.json'), replies);
         const n = Object.keys(out.book.entries).length;
         console.log(`built ${n} entries, ${out.scenes.boundaries.length} scene breaks, ${out.ledger.review.length} for review, ${replies.length} model call(s), ${((Date.now() - started) / 1000).toFixed(0)}s -> ${args.dir}`);
         for (const r of out.ledger.review) console.log(`  review: ${r.name}: ${r.reason}`);

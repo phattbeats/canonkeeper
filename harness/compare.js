@@ -8,8 +8,9 @@
 // A reference entry counts as found when a built entry shares one of its
 // names: its title (split on ',' and '/', parentheses dropped) or one of its
 // keys, compared after `fold`. Names are matched, wording never is.
-// Unmatched entries are listed so a human can rule on near-misses; the exit
-// code is 0 only when every reference entry is found.
+// A miss whose name contains, or is contained in, a built name is flagged
+// NEAR but still counted as missed. Unmatched entries are listed so a human
+// can rule on them; the exit code is 0 only when every reference entry is found.
 
 import { readFileSync } from 'node:fs';
 import { fold } from './checks.js';
@@ -17,6 +18,11 @@ import { fold } from './checks.js';
 export function referenceNames(entry) {
     const title = String(entry.comment ?? '').replace(/\([^)]*\)/g, '');
     return new Set([...title.split(/[,/]/), ...(entry.key ?? [])].map(fold).filter(Boolean));
+}
+
+function contains(a, b) {
+    const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+    return short.split(' ').length >= 2 && ` ${long} `.includes(` ${short} `);
 }
 
 export function compareBooks(reference, built) {
@@ -27,8 +33,11 @@ export function compareBooks(reference, built) {
     for (const r of Object.values(reference.entries)) {
         const names = referenceNames(r);
         const hits = builtNames.filter((b) => [...b.names].some((n) => names.has(n)));
+        // Second tier, reported apart: one name contains the other, and the
+        // shorter has at least two words ("Lady Ophelia Wexley" / "Ophelia Wexley").
+        const near = hits.length ? [] : builtNames.filter((b) => [...b.names].some((n) => [...names].some((m) => contains(n, m))));
         if (hits.length) found.push({ reference: r.comment, built: hits.map((h) => h.title) });
-        else missed.push({ reference: r.comment, names: [...names] });
+        else missed.push({ reference: r.comment, names: [...names], near: near.map((h) => h.title) });
     }
     const matched = new Set(found.flatMap((f) => f.built));
     const unmatchedBuilt = builtNames.filter((b) => !matched.has(b.title)).map((b) => b.title);
@@ -46,7 +55,7 @@ function main() {
     if (args.json) console.log(JSON.stringify(report, null, 2));
     else {
         console.log(`reference recall ${report.found}/${report.total} (${(report.recall * 100).toFixed(1)}%), built ${report.builtCount} entries`);
-        for (const m of report.missed) console.log(`  MISSED  ${m.reference}   names: ${m.names.join(' | ')}`);
+        for (const m of report.missed) console.log(`  MISSED  ${m.reference}   names: ${m.names.join(' | ')}${m.near.length ? `   NEAR: ${m.near.join('; ')}` : ''}`);
         console.log(`  built entries matching no reference entry (${report.unmatchedBuilt.length}): ${report.unmatchedBuilt.join('; ')}`);
     }
     process.exit(report.missed.length ? 1 : 0);

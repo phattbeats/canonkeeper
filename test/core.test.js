@@ -69,9 +69,26 @@ test('a case-sensitive entry also keys the capitalised form of a lowercase epith
     assert.ok(entries[0].key.includes('street runner'));
 });
 
+// Padding so a key on two messages isn't "nearly every message".
+const pad = (texts) => [...texts, 'Rain.', 'Wind.', 'Fog.'].map((text, id) => ({ id, text }));
+
+test('a phrase used in lower case mid-sentence does not make its entry case-sensitive', () => {
+    const msgs = pad(['The Prophecy was old.', 'Nobody trusted the prophecy.']);
+    const [entry] = compile([ent('The Prophecy', ['the prophecy'], [0, 1])], msgs).entries;
+    assert.equal(entry.caseSensitive, false);
+    assert.deepEqual(entry.key, ['the prophecy']);
+});
+
+test('a case-sensitive "the X" key also matches "The X" at the start of a sentence', () => {
+    const msgs = pad(['The Tailor bowed.', 'She feared the Tailor.']);
+    const [entry] = compile([ent('The Tailor', ['the Tailor'], [0, 1], { caseSensitive: true })], msgs).entries;
+    assert.equal(entry.caseSensitive, true);
+    assert.deepEqual([...entry.key].sort(), ['The Tailor', 'the Tailor']);
+});
+
 test('a key the story never uses is dropped', () => {
     const { entries, ledger } = compile([ent('Tamsin Dray', ['Tamsin', 'the Courier Queen'], [2])], messages);
-    assert.deepEqual(entries[0].key, ['Tamsin Dray', 'Tamsin']);
+    assert.deepEqual([...entries[0].key].sort(), ['Tamsin', 'Tamsin Dray']);
     assert.match(ledger[0].dropped[0].reason, /not in the transcript/);
 });
 

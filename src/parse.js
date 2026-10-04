@@ -5,11 +5,17 @@
 
 export class ModelOutputError extends Error {}
 
-/** Accepts a bare JSON object, tolerating only a code fence around it. */
+/**
+ * Accepts one JSON object, tolerating a code fence or a sentence of prose
+ * around it. The object itself must parse as it stands: nothing is repaired.
+ */
 export function extractJson(text) {
-    const t = String(text).trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/, '');
+    const t = String(text);
+    const from = t.indexOf('{');
+    const to = t.lastIndexOf('}');
+    if (from < 0 || to < from) throw new ModelOutputError('no JSON object in the reply');
     try {
-        return JSON.parse(t);
+        return JSON.parse(t.slice(from, to + 1));
     } catch (err) {
         throw new ModelOutputError(`not valid JSON: ${err.message}`);
     }

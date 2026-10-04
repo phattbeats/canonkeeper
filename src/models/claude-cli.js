@@ -23,6 +23,9 @@ export function claudeCli({ model = 'claude-sonnet-5', bin = 'claude' } = {}) {
                     return reject(new Error(`claude exited ${code}: ${err || out}`.slice(0, 2000)));
                 }
                 if (parsed.is_error || typeof parsed.result !== 'string') return reject(new Error(`claude failed: ${JSON.stringify(parsed).slice(0, 2000)}`));
+                // A reply cut off at the output limit is not a reply; returning
+                // it would hand the parser a fragment.
+                if (parsed.stop_reason === 'max_tokens') return resolve('');
                 resolve(parsed.result);
             });
             child.stdin.end(user);

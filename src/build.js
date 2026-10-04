@@ -40,7 +40,7 @@ export function toBook(entries) {
 export async function build({ messages, generate, contextTokens, maxOutputTokens, pinned = [] }) {
     if (!messages.length) throw new Error('empty transcript');
     const budget = planBudget({ contextTokens, maxOutputTokens });
-    const prompt = buildPrompt(messages);
+    const prompt = buildPrompt(messages, budget.output);
     const needed = estimateTokens(prompt.system + prompt.user);
     if (needed > budget.input) throw new TooLongError(needed, budget.input);
 
