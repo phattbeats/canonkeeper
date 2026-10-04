@@ -233,6 +233,52 @@ test('a fact from a changed message the model does not restate is dropped, and s
     assert.ok(out.ledger.review.some((x) => x.name === 'Saltgate' && /not restated/.test(x.reason)));
 });
 
+// ── an epithet named later (live mode reads one scene at a time) ───────────
+
+const scene1 = messages.slice(0, 10);
+const scenes12 = messages.slice(0, 20);
+
+test('an entity known by an epithet is renamed when a later scene names it, and keeps its uid', async () => {
+    const first = await build({
+        messages: scene1,
+        generate: replay([reply([{ name: 'the Magistrate', keys: ['the Magistrate'], facts: [{ text: 'Has men watching the docks.', messages: [5] }] }])]),
+        contextTokens: CONTEXT,
+    });
+    const uid = titled(first.book, 'the Magistrate').uid;
+    const r = reply([{ name: 'Dovrin Kesh', keys: ['Kesh', 'Magistrate Kesh', 'Dovrin Kesh', 'the Magistrate'], facts: [{ text: 'Wants every copy of the charts burned.', messages: [15] }] }]);
+    const out = await update({ book: first.book, ledger: first.ledger, messages: scenes12, generate: replay([r]), contextTokens: CONTEXT });
+    const kesh = titled(out.book, 'Dovrin Kesh');
+    assert.equal(kesh.uid, uid);
+    assert.ok(!titled(out.book, 'the Magistrate'));
+    assert.ok(kesh.key.includes('the Magistrate') && kesh.key.includes('Kesh'));
+    assert.match(kesh.content, /watching the docks/);
+    assert.match(kesh.content, /burned/);
+    assert.ok(out.ledger.review.some((x) => x.name === 'Dovrin Kesh' && /renamed/.test(x.reason)));
+});
+
+test('two known entries the passages show are one are merged into the named one', async () => {
+    const first = await build({
+        messages: scene1,
+        generate: replay([reply([
+            { name: 'the Magistrate', keys: ['the Magistrate'], facts: [{ text: 'Has men watching the docks.', messages: [5] }] },
+            { name: 'Kesh', keys: ['Kesh'], facts: [{ text: 'Gave Hale his orders.', messages: [9] }] },
+        ])]),
+        contextTokens: CONTEXT,
+    });
+    const uid = titled(first.book, 'Kesh').uid;
+    const r = reply([{ name: 'Kesh', keys: ['Kesh', 'Magistrate Kesh', 'Dovrin Kesh', 'Magistrate'], facts: [{ text: 'Wants every copy of the charts burned.', messages: [15] }] }]);
+    const out = await update({ book: first.book, ledger: first.ledger, messages: scenes12, generate: replay([r]), contextTokens: CONTEXT });
+    const kesh = titled(out.book, 'Kesh');
+    assert.equal(kesh.uid, uid);
+    assert.ok(!titled(out.book, 'the Magistrate'));
+    assert.ok(kesh.key.includes('the Magistrate'));
+    assert.match(kesh.content, /watching the docks/);
+    assert.ok(out.ledger.review.some((x) => /"the Magistrate" is the same entity/.test(x.reason)));
+    // And the next run is zero writes.
+    const again = await update({ book: out.book, ledger: out.ledger, messages: scenes12, generate: noModel, contextTokens: CONTEXT });
+    assert.equal(again.plan.length, 0);
+});
+
 test('a message inserted early moves sources, but no fact is reworded', async () => {
     const first = await built();
     const now = [...messages.slice(0, 12), { id: 12, name: 'Narrator', text: 'Rain.' }, ...messages.slice(12)].map((m, id) => ({ ...m, id }));

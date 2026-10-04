@@ -77,6 +77,14 @@ export function windowsFor(dirty, boundaries, count) {
  * keeps its flags: they were set from the whole story, the reply saw one
  * part of it.
  *
+ * Read one scene at a time, a story can call someone by an epithet before it
+ * names them, so one real entity can be on the books twice. When the reply
+ * lists a known entity's name among the keys of another, they are one: a new
+ * name that lists exactly one known entity is that entity, now properly
+ * named, and takes the new name, keeping the old one as a key and its uid;
+ * a known entity listed by another known one is folded into it, keys, facts
+ * and all. `renamed` records both, as { from, to }.
+ *
  * A restated fact goes back where its entity's reopened facts were, with all
  * the sources it had, so the entry reads as it did. Any other fact is new,
  * and something new can only come from a changed message. A fact citing none
@@ -85,23 +93,63 @@ export function windowsFor(dirty, boundaries, count) {
  * never grows from unchanged text, and an edit doesn't turn into a
  * re-description of the context around it.
  */
-function merge(canon, found, previous, fresh, review) {
-    const restated = new Map(previous.map((p) => [`${fold(p.name)}\u0000${fold(p.text)}`, p.messages]));
-    const restatedNow = new Set();
+function merge(canon, found, previous, fresh, review, renamed) {
     const byName = new Map(canon.map((e) => [fold(e.name), e]));
     const keyOwners = new Map();
-    for (const e of canon) for (const k of e.keys) keyOwners.set(fold(k), [...(keyOwners.get(fold(k)) ?? []), e]);
+    const own = (k, e) => keyOwners.set(fold(k), [...new Set([...(keyOwners.get(fold(k)) ?? []), e])]);
+    for (const e of canon) for (const k of e.keys) own(k, e);
+    // A name an entity no longer goes by still leads to it, so a reopened
+    // fact filed under the old name can be restated under the new one.
+    const alias = new Map();
+    const current = (name) => alias.get(fold(name))?.name ?? name;
+    const tag = (name, text) => `${fold(current(name))}\u0000${fold(text)}`;
+    const restatedFrom = (name, text) => previous.find((p) => tag(p.name, p.text) === tag(name, text))?.messages;
+    const restatedNow = new Set();
+    // "Magistrate" lists the entity known as "the Magistrate".
+    const listedAs = (k) => byName.get(fold(k)) ?? byName.get(`the ${fold(k)}`) ?? byName.get(fold(k).replace(/^the /, ''));
     for (const f of found) {
         const owners = keyOwners.get(fold(f.name)) ?? [];
-        const known = byName.get(fold(f.name)) ?? (owners.length === 1 ? owners[0] : null);
+        let known = byName.get(fold(f.name)) ?? (owners.length === 1 ? owners[0] : null);
+        const listed = [...new Set(f.keys.map(listedAs).filter((x) => x && x !== known))];
+        if (!known && listed.length === 1) {
+            known = listed.shift();
+            byName.delete(fold(known.name));
+            alias.set(fold(known.name), known);
+            if (!known.keys.some((x) => fold(x) === fold(known.name))) known.keys.push(known.name);
+            own(known.name, known);
+            renamed.push({ from: known.name, to: f.name });
+            review.push({ name: f.name, reason: `the story names "${known.name}"; renamed, same entry` });
+            known.name = f.name;
+            byName.set(fold(known.name), known);
+        }
+        for (const other of known ? listed : []) {
+            for (const k of [other.name, ...other.keys]) {
+                if (!known.keys.some((x) => fold(x) === fold(k))) known.keys.push(k);
+                own(k, known);
+            }
+            for (const fact of other.facts) {
+                const same = known.facts.find((x) => fold(x.text) === fold(fact.text));
+                if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((x, y) => x - y);
+                else known.facts.push(fact);
+            }
+            known.caseSensitive ||= other.caseSensitive;
+            known.cascade &&= other.cascade;
+            known.throttle = Math.max(known.throttle, other.throttle);
+            byName.delete(fold(other.name));
+            alias.set(fold(other.name), known);
+            for (const [k, v] of keyOwners) keyOwners.set(k, v.filter((x) => x !== other));
+            canon.splice(canon.indexOf(other), 1);
+            renamed.push({ from: other.name, to: known.name });
+            review.push({ name: known.name, reason: `"${other.name}" is the same entity; merged into this entry` });
+        }
         const name = known?.name ?? f.name;
-        const reopened = previous.filter((p) => fold(p.name) === fold(name));
-        let stand = reopened.length - f.facts.filter((x) => restated.has(`${fold(name)}\u0000${fold(x.text)}`)).length;
+        const reopened = previous.filter((p) => fold(current(p.name)) === fold(name));
+        let stand = reopened.length - f.facts.filter((x) => restatedFrom(name, x.text)).length;
         const facts = [];
         for (const fact of f.facts) {
-            const before = restated.get(`${fold(name)}\u0000${fold(fact.text)}`);
+            const before = restatedFrom(name, fact.text);
             if (before) {
-                restatedNow.add(`${fold(name)}\u0000${fold(fact.text)}`);
+                restatedNow.add(tag(name, fact.text));
                 facts.push({ text: fact.text, messages: [...new Set([...fact.messages, ...before])].sort((x, y) => x - y) });
             }
             else if (fact.messages.some((id) => fresh.has(id))) facts.push(fact);
@@ -115,7 +163,11 @@ function merge(canon, found, previous, fresh, review) {
             canon.push(e);
             byName.set(fold(e.name), e);
         }
-        for (const k of f.keys) if (!e.keys.some((x) => fold(x) === fold(k))) e.keys.push(k);
+        for (const k of f.keys) {
+            if (e.keys.some((x) => fold(x) === fold(k))) continue;
+            e.keys.push(k);
+            own(k, e);
+        }
         for (const fact of facts) {
             const same = e.facts.find((x) => fold(x.text) === fold(fact.text));
             if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((x, y) => x - y);
@@ -127,7 +179,7 @@ function merge(canon, found, previous, fresh, review) {
         }
     }
     for (const p of previous) {
-        if (!restatedNow.has(`${fold(p.name)}\u0000${fold(p.text)}`)) review.push({ name: p.name, reason: `fact from a changed message not restated word for word; dropped: ${p.text}` });
+        if (!restatedNow.has(tag(p.name, p.text))) review.push({ name: current(p.name), reason: `fact from a changed message not restated word for word; dropped: ${p.text}` });
     }
 }
 
@@ -183,6 +235,7 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
     let scenes = ledger.scenes;
     let budget = ledger.budget;
     const review = [];
+    const renamed = [];
     let calls = 0;
 
     if (fingerprint(messages) !== ledger.fingerprint) {
@@ -222,7 +275,13 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
             calls = n;
             review.push(...reply.review);
             if (!starts) scenes = [...new Set([...scenes, ...reply.scenes.filter(inWindow)])].sort((a, b) => a - b);
-            merge(canon, reply.entities, previous, new Set(fresh), review);
+            merge(canon, reply.entities, previous, new Set(fresh), review, renamed);
+            // A renamed entity keeps its entry; one folded into another
+            // gives its entry up.
+            for (const r of renamed) {
+                if (uids.has(fold(r.to))) continue;
+                if (uids.has(fold(r.from))) uids.set(fold(r.to), uids.get(fold(r.from)));
+            }
         }
         canon = canon.filter((e) => e.facts.length).map(({ slot, ...e }) => e);
     }

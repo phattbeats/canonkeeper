@@ -99,7 +99,15 @@ The detector was scored against the answer key's 7 scene starts at ±1, on 81 me
 - **Smaller batches are worse.** At cadence 2 each call sees too little to compare.
 - **Earlier prompts did worse.** Before look-ahead, Haiku had one false start in 36–39 in 3 of 3 runs. With look-ahead but the "where does a scene start?" question, 2 of 3 runs had a false start in the escape.
 
-In the full session, the writer was claude-sonnet-5. Live mode made 7 updates, one per scene end, and the book passed I1–I6. Its C7 (shown, not gated) found every required entity at 0.95 precision. One entity was split, though. The story calls Dovrin Kesh "the Magistrate" in the first scene and names him later. The update reads one scene at a time and reported Kesh as new, instead of renaming the epithet's entity the way the chunked fallback does. That entry then also took the Magistrate's Hall as a key.
+In the full session, the writer was claude-sonnet-5. Live mode made 7 updates, one per scene end, and the book passed I1–I6.
+
+At first, one entity was split. The story calls Dovrin Kesh "the Magistrate" and drops the name "Kesh" in the first scene, but it only shows they are one person in the second. The first update had already made two entries, and the second added "Magistrate Kesh" to one of them while leaving "the Magistrate" alone. That entry also took keys for things of his, such as "Magistrate's hall", which is a place. That happened in 2 of 2 sessions. Three fixes:
+
+- The update prompt asks for an entity listed under an epithet to be reported once, under its proper name, with the epithet among its keys. This is the instruction a chunked part already gets.
+- When a reply lists one known entity's name among another's keys, `merge()` folds the first into the second (keys, facts, flags). A new name that lists exactly one known entity is a rename: the entry keeps its uid and its old name as a key. The review list records both.
+- The field guide says a key names the entity itself, never something of its.
+
+After the fixes, 3 of 3 sessions had no split or over-merge: one Kesh entry with "the Magistrate" among its keys, and the Magistrate's Hall in its own entry. Two sessions passed C7. The third missed the Saltwind Chart, which is model omission (see the chunked results). `fixtures/story/live` holds one of the passing sessions.
 
 ```bash
 node harness/live-sim.js fixtures/story/transcript.jsonl --out .run/live [--detect-model claude-haiku-4-5-20251001] [--model claude-sonnet-5] [--cadence 4] [--detect-only]
