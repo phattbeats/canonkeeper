@@ -11,9 +11,11 @@ const log = (line) => console.info(`[Canonkeeper] ${line}`);
 
 let running = false;
 
+/** The one settings object, filled in place: handlers hold on to it. */
 function settings() {
     const all = ctx().extensionSettings;
-    all[NAME] = { ...DEFAULT_SETTINGS, ...(all[NAME] ?? {}) };
+    all[NAME] ??= {};
+    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) all[NAME][k] ??= v;
     return all[NAME];
 }
 
