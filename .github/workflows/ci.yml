@@ -26,15 +26,19 @@ jobs:
             fixtures/story/reference/scenes.json \
             fixtures/story/broken-collision/book.json
 
+      # The gate steps below run even if the tests fail, so each signal is
+      # reported on its own.
       - name: Unit tests (each check shown red on a broken book)
         run: npm test
 
       - name: Gate on the reference run must be green
+        if: ${{ !cancelled() }}
         run: node harness/gate.js --story fixtures/story --run fixtures/story/reference
 
       # Negative control: the gate has to be able to fail. Exit 1 (red) is
       # required here; 0 (a pass) or 2 (fixture error) both fail the job.
       - name: Gate on the broken book must be red
+        if: ${{ !cancelled() }}
         run: |
           set +e
           node harness/gate.js --story fixtures/story --run fixtures/story/broken-collision
