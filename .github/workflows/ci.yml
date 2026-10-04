@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The gate must never pass by vacancy. The fixtures are committed, and
+      # this fails if any of them is untracked or gitignored.
+      - name: Fixtures are committed
+        run: |
+          git ls-files --error-unmatch \
+            fixtures/story/transcript.jsonl \
+            fixtures/story/answer-key.json \
+            fixtures/story/reference/book.json \
+            fixtures/story/reference/rerun.json \
+            fixtures/story/reference/scenes.json \
+            fixtures/story/broken-collision/book.json
+
+      - name: Unit tests (each check shown red on a broken book)
+        run: npm test
+
+      - name: Gate on the reference run must be green
+        run: node harness/gate.js --story fixtures/story --run fixtures/story/reference
+
+      # Negative control: the gate has to be able to fail. Exit 1 (red) is
+      # required here; 0 (a pass) or 2 (fixture error) both fail the job.
+      - name: Gate on the broken book must be red
+        run: |
+          set +e
+          node harness/gate.js --story fixtures/story --run fixtures/story/broken-collision
+          code=$?
+          if [ "$code" -ne 1 ]; then echo "expected exit 1 (red), got $code"; exit 1; fi

@@ -1,0 +1,287 @@
+// The acceptance checks. Each returns { id, name, ok, detail }.
+//
+// They test properties and coverage, never wording: a builder that writes a
+// better entry than the reference must still pass.
+//
+// Rule shared by every check: one that inspects nothing fails. An empty book,
+// a missing rerun or a book with no pins is reported red, never vacuously
+// green.
+//
+//   I1  no keyword claimed by two enabled entries
+//   I2  no enabled entry ships with zero keys
+//   I3  no entry fires on nearly every message
+//   I4  every entry carries provenance, inside the transcript, that points at
+//       a message where one of the entry's keys actually fires
+//   I5  re-running on the unchanged transcript writes nothing
+//   I6  every human-pinned entry survives the re-run untouched
+//   C7  entity coverage against the answer key: found / missed / extra, plus
+//       splits, over-merges, reachability, case-trap decoys, contested keys
+//   C8  scene-boundary precision and recall at ±tolerance messages
+
+import { entryFires, keyFires, DEFAULTS } from './activation.js';
+
+export const THRESHOLDS = {
+    maxFireFraction: 0.8, // I3: "nearly every message"
+    minRecall: 1.0, // C7: required entities found
+    minPrecision: 0.8, // C7: entries that map to a real entity
+    boundaryTolerance: 1, // C8: ± messages
+    minBoundaryPrecision: 0.9, // C8
+    minBoundaryRecall: 0.9, // C8
+};
+
+const enabled = (book) => book.filter((e) => !e.disabled);
+const result = (id, name, ok, detail) => ({ id, name, ok, detail });
+const emptyFail = (id, name) => result(id, name, false, { reason: 'empty book: nothing to check' });
+
+// ── I1 ───────────────────────────────────────────────────────────────────────
+
+/** Two claims on one key collide unless both are case-sensitive and differ in case. */
+function claimId(key, entry) {
+    const cs = entry.caseSensitive ?? DEFAULTS.caseSensitive;
+    return cs ? key : key.toLowerCase();
+}
+
+export function checkI1KeywordCollisions(book) {
+    const name = 'no keyword claimed by two entries';
+    const live = enabled(book);
+    if (!live.length) return emptyFail('I1', name);
+    const claims = []; // { key, folded, cs, uid }
+    for (const e of live) {
+        const cs = e.caseSensitive ?? DEFAULTS.caseSensitive;
+        for (const k of new Set(e.keys)) claims.push({ key: k, folded: k.toLowerCase(), cs, uid: e.uid, id: claimId(k, e) });
+    }
+    const collisions = [];
+    for (let i = 0; i < claims.length; i++) {
+        for (let j = i + 1; j < claims.length; j++) {
+            const a = claims[i], b = claims[j];
+            if (a.uid === b.uid || a.folded !== b.folded) continue;
+            if (a.cs && b.cs && a.key !== b.key) continue;
+            collisions.push({ key: a.key, uids: [a.uid, b.uid] });
+        }
+    }
+    return result('I1', name, collisions.length === 0, { collisions });
+}
+
+// ── I2 ───────────────────────────────────────────────────────────────────────
+
+export function checkI2ZeroKeyEntries(book) {
+    const name = 'no entry with zero keys';
+    const live = enabled(book);
+    if (!live.length) return emptyFail('I2', name);
+    const offenders = live.filter((e) => e.keys.length === 0).map((e) => ({ uid: e.uid, title: e.title }));
+    return result('I2', name, offenders.length === 0, { offenders });
+}
+
+// ── I3 ───────────────────────────────────────────────────────────────────────
+
+export function checkI3OverbroadKeys(book, messages, { maxFireFraction = THRESHOLDS.maxFireFraction } = {}) {
+    const name = 'no key fires on nearly every message';
+    const live = enabled(book);
+    if (!live.length) return emptyFail('I3', name);
+    const offenders = [];
+    for (const e of live) {
+        const probes = e.constant ? [{ key: '(constant)', fires: () => true }] : e.keys.map((k) => ({ key: k, fires: (t) => keyFires(k, e, t) }));
+        for (const p of probes) {
+            const fraction = messages.filter((m) => p.fires(m.text)).length / messages.length;
+            if (fraction > maxFireFraction) offenders.push({ uid: e.uid, key: p.key, fraction: +fraction.toFixed(3) });
+        }
+    }
+    return result('I3', name, offenders.length === 0, { maxFireFraction, offenders });
+}
+
+// ── I4 ───────────────────────────────────────────────────────────────────────
+
+export function checkI4Provenance(book, messages) {
+    const name = 'provenance present, in range, and grounded';
+    const live = enabled(book);
+    if (!live.length) return emptyFail('I4', name);
+    const last = messages.length - 1;
+    const offenders = [];
+    for (const e of live) {
+        if (!e.sources.length) {
+            offenders.push({ uid: e.uid, problem: 'no sources' });
+            continue;
+        }
+        const bad = e.sources.filter((r) => !(Array.isArray(r) && r.length === 2 && Number.isInteger(r[0]) && Number.isInteger(r[1]) && r[0] >= 0 && r[0] <= r[1] && r[1] <= last));
+        if (bad.length) {
+            offenders.push({ uid: e.uid, problem: 'source out of range or malformed', ranges: bad });
+            continue;
+        }
+        const grounded = e.sources.some(([a, b]) => messages.slice(a, b + 1).some((m) => entryFires(e, m.text)));
+        if (!grounded) offenders.push({ uid: e.uid, problem: 'no cited message mentions any of its keys', ranges: e.sources });
+    }
+    return result('I4', name, offenders.length === 0, { offenders });
+}
+
+// ── I5 / I6 ──────────────────────────────────────────────────────────────────
+
+function canonical(value) {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical(value[k])]));
+    }
+    return value;
+}
+const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+
+export function checkI5ZeroWritesOnRerun(book, rerun) {
+    const name = 'zero writes on an unchanged re-run';
+    if (!book.length) return emptyFail('I5', name);
+    const before = new Map(book.map((e) => [e.uid, e.raw]));
+    const after = new Map(rerun.map((e) => [e.uid, e.raw]));
+    const added = [...after.keys()].filter((u) => !before.has(u));
+    const removed = [...before.keys()].filter((u) => !after.has(u));
+    const changed = [...before.keys()].filter((u) => after.has(u) && !same(before.get(u), after.get(u)));
+    return result('I5', name, !added.length && !removed.length && !changed.length, { added, removed, changed });
+}
+
+export function checkI6PinsSurvive(book, rerun) {
+    const name = 'human-pinned entries survive the re-run';
+    const pinned = enabled(book).filter((e) => e.pinned);
+    if (!pinned.length) return result('I6', name, false, { reason: 'no pinned entry in the book: nothing to check' });
+    const after = new Map(rerun.map((e) => [e.uid, e]));
+    const offenders = [];
+    for (const p of pinned) {
+        const q = after.get(p.uid);
+        if (!q) offenders.push({ uid: p.uid, problem: 'deleted' });
+        else if (!q.pinned) offenders.push({ uid: p.uid, problem: 'unpinned' });
+        else if (q.disabled) offenders.push({ uid: p.uid, problem: 'disabled' });
+        else if (q.title !== p.title || q.content !== p.content || !same(q.keys, p.keys) || q.caseSensitive !== p.caseSensitive) {
+            offenders.push({ uid: p.uid, problem: 'modified' });
+        }
+    }
+    return result('I6', name, offenders.length === 0, { pinned: pinned.map((e) => e.uid), offenders });
+}
+
+// ── answer key helpers ───────────────────────────────────────────────────────
+
+/** Fold a name for identity comparison: case, a leading "the", punctuation and spacing. */
+export function fold(s) {
+    return String(s).toLowerCase().replace(/^the\s+/, '').replace(/[^\p{L}\p{N}']+/gu, ' ').trim();
+}
+
+const entityNames = (ent) => [ent.name, ...(ent.aliases ?? [])];
+
+/** Message ids where the entity is mentioned by any of its names. */
+export function entityMentions(ent, messages) {
+    const probe = { caseSensitive: !!ent.caseSensitive, matchWholeWords: true };
+    return messages.filter((m) => entityNames(ent).some((n) => keyFires(n, probe, m.text))).map((m) => m.id);
+}
+
+/**
+ * "Check the answer key itself": a wrong key makes every score wrong (an
+ * over-merged key once turned 0.97 precision into a fake 0.29).
+ */
+export function validateAnswerKey(key, messages) {
+    const problems = [];
+    const owner = new Map();
+    for (const ent of key.entities) {
+        if (!ent.name || !ent.type) problems.push(`entity missing name/type: ${JSON.stringify(ent)}`);
+        for (const n of entityNames(ent)) {
+            const f = fold(n);
+            if (owner.has(f) && owner.get(f) !== ent.name) problems.push(`name '${n}' belongs to both '${owner.get(f)}' and '${ent.name}' (over-merged key)`);
+            owner.set(f, ent.name);
+        }
+        if (!entityMentions(ent, messages).length) problems.push(`'${ent.name}' is never mentioned in the transcript`);
+        for (const d of ent.decoys ?? []) {
+            const m = messages[d];
+            if (!m) problems.push(`'${ent.name}' decoy ${d} is out of range`);
+            else if (!keyFires(ent.name, { caseSensitive: false }, m.text)) problems.push(`'${ent.name}' decoy ${d} does not contain the word at all`);
+            else if (entityMentions(ent, [m]).length) problems.push(`'${ent.name}' decoy ${d} actually mentions the entity`);
+        }
+    }
+    for (const k of key.contestedKeys ?? []) {
+        if (owner.has(fold(k))) problems.push(`contested key '${k}' is also an entity name`);
+        if (!messages.some((m) => keyFires(k, { caseSensitive: false }, m.text))) problems.push(`contested key '${k}' never appears in the transcript`);
+    }
+    const missName = key.planted?.miss?.entity;
+    if (!missName || !key.entities.some((e) => e.name === missName && e.required)) problems.push('no required planted-miss entity');
+    const coll = key.planted?.collision;
+    if (!coll || !(key.contestedKeys ?? []).includes(coll.key)) problems.push('planted collision key is not listed in contestedKeys');
+    for (const n of coll?.entities ?? []) {
+        const ent = key.entities.find((e) => e.name === n);
+        if (!ent) problems.push(`planted collision names unknown entity '${n}'`);
+        else if (!messages.some((m) => entityMentions(ent, [m]).length && keyFires(coll.key, {}, m.text))) {
+            problems.push(`planted collision key '${coll.key}' never appears alongside '${n}'`);
+        }
+    }
+    const b = key.boundaries;
+    if (!b.length) problems.push('answer key has no scene boundaries');
+    if (b.some((x, i) => !Number.isInteger(x) || x <= 0 || x >= messages.length || (i && x <= b[i - 1]))) problems.push('boundaries must be increasing ids in 1..n-1');
+    if (key.messageCount !== undefined && key.messageCount !== messages.length) problems.push(`answer key expects ${key.messageCount} messages, transcript has ${messages.length}`);
+    return { ok: problems.length === 0, problems };
+}
+
+// ── C7 ───────────────────────────────────────────────────────────────────────
+
+export function scoreC7Coverage(book, key, messages, { minRecall = THRESHOLDS.minRecall, minPrecision = THRESHOLDS.minPrecision } = {}) {
+    const name = 'entity coverage vs answer key';
+    const live = enabled(book);
+    if (!live.length) return emptyFail('C7', name);
+
+    const nameToEntity = new Map();
+    for (const ent of key.entities) for (const n of entityNames(ent)) nameToEntity.set(fold(n), ent);
+
+    const byEntity = new Map(key.entities.map((ent) => [ent.name, []]));
+    const overMerged = [];
+    const extra = [];
+    for (const e of live) {
+        const hits = new Set([e.title, ...e.keys].map((n) => nameToEntity.get(fold(n))).filter(Boolean));
+        if (hits.size === 0) extra.push({ uid: e.uid, title: e.title });
+        if (hits.size > 1) overMerged.push({ uid: e.uid, entities: [...hits].map((x) => x.name) });
+        for (const ent of hits) byEntity.get(ent.name).push(e);
+    }
+
+    const required = key.entities.filter((ent) => ent.required);
+    const missed = required.filter((ent) => !byEntity.get(ent.name).length).map((ent) => ent.name);
+    const split = key.entities.filter((ent) => byEntity.get(ent.name).length > 1).map((ent) => ({ entity: ent.name, uids: byEntity.get(ent.name).map((e) => e.uid) }));
+
+    const unreachable = [];
+    const decoyFires = [];
+    for (const ent of key.entities) {
+        const entries = byEntity.get(ent.name);
+        if (!entries.length) continue;
+        const mentions = entityMentions(ent, messages);
+        for (const e of entries) {
+            if (!mentions.some((id) => entryFires(e, messages[id].text))) unreachable.push({ entity: ent.name, uid: e.uid });
+            const fired = (ent.decoys ?? []).filter((id) => entryFires(e, messages[id].text));
+            if (fired.length) decoyFires.push({ entity: ent.name, uid: e.uid, messages: fired });
+        }
+    }
+
+    const contested = new Set((key.contestedKeys ?? []).map((k) => k.toLowerCase()));
+    const contestedClaims = live.flatMap((e) => e.keys.filter((k) => contested.has(k.toLowerCase())).map((k) => ({ uid: e.uid, key: k })));
+
+    const recall = (required.length - missed.length) / required.length;
+    const precision = (live.length - extra.length) / live.length;
+    const ok = recall >= minRecall && precision >= minPrecision && !split.length && !overMerged.length && !unreachable.length && !decoyFires.length && !contestedClaims.length;
+    return result('C7', name, ok, { recall, precision, minRecall, minPrecision, missed, extra, split, overMerged, unreachable, decoyFires, contestedClaims });
+}
+
+// ── C8 ───────────────────────────────────────────────────────────────────────
+
+export function scoreC8Boundaries(predicted, expected, {
+    tolerance = THRESHOLDS.boundaryTolerance,
+    minPrecision = THRESHOLDS.minBoundaryPrecision,
+    minRecall = THRESHOLDS.minBoundaryRecall,
+} = {}) {
+    const name = `scene boundaries at ±${tolerance}`;
+    if (!predicted.length) return result('C8', name, false, { reason: 'no boundaries predicted: nothing to check' });
+    if (!expected.length) return result('C8', name, false, { reason: 'answer key has no boundaries' });
+    // One-to-one: each expected boundary can be claimed by at most one prediction.
+    const free = [...expected];
+    let hits = 0;
+    for (const p of [...predicted].sort((a, b) => a - b)) {
+        let best = -1;
+        for (let i = 0; i < free.length; i++) {
+            if (Math.abs(free[i] - p) <= tolerance && (best < 0 || Math.abs(free[i] - p) < Math.abs(free[best] - p))) best = i;
+        }
+        if (best >= 0) {
+            free.splice(best, 1);
+            hits++;
+        }
+    }
+    const precision = hits / predicted.length;
+    const recall = hits / expected.length;
+    return result('C8', name, precision >= minPrecision && recall >= minRecall, { precision, recall, minPrecision, minRecall, unmatchedExpected: free });
+}

@@ -1,0 +1,12 @@
+{
+  "name": "canonkeeper",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Turns a SillyTavern roleplay chat into a correct, self-maintaining World Info lorebook.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test",
+    "gate": "node harness/gate.js --story fixtures/story --run fixtures/story/reference"
+  }
+}

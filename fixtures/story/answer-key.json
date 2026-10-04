@@ -1,0 +1,43 @@
+{
+  "story": "The Saltwind Chart (invented for Canonkeeper's test suite; no real persons or chats)",
+  "messageCount": 81,
+  "entities": [
+    { "name": "Tamsin Dray", "type": "character", "required": true, "aliases": ["Tamsin"] },
+    { "name": "Mora Quill", "type": "character", "required": true, "aliases": ["Quill", "Captain Quill"] },
+    { "name": "Oren Hale", "type": "character", "required": true, "caseSensitive": true, "aliases": ["Hale", "Captain Hale"] },
+    { "name": "Wren", "type": "character", "required": true, "caseSensitive": true, "aliases": [], "decoys": [10, 30, 79] },
+    { "name": "Ines Vell", "type": "character", "required": true, "aliases": ["Ines", "cartographer"] },
+    { "name": "Brother Saul", "type": "character", "required": true, "aliases": ["Saul"] },
+    { "name": "Dovrin Kesh", "type": "character", "required": true, "aliases": ["Kesh", "Magistrate"] },
+    { "name": "Pell", "type": "character", "required": false, "aliases": [] },
+    { "name": "Saltgate", "type": "location", "required": true, "aliases": [] },
+    { "name": "Drowned Lantern", "type": "location", "required": true, "aliases": [] },
+    { "name": "Kestrel Lighthouse", "type": "location", "required": true, "aliases": ["Kestrel"] },
+    { "name": "Undercroft", "type": "location", "required": true, "aliases": [] },
+    { "name": "Saltwind Chart", "type": "item", "required": true, "aliases": [] },
+    { "name": "Gull's Errand", "type": "item", "required": true, "aliases": [] },
+    { "name": "Harbor Fire", "type": "event", "required": true, "aliases": [] },
+    { "name": "Lighthouse Bargain", "type": "event", "required": true, "aliases": [] },
+    { "name": "Lamplighters' Guild", "type": "faction", "required": true, "aliases": ["Lamplighters"] }
+  ],
+  "contestedKeys": ["Captain"],
+  "planted": {
+    "miss": {
+      "entity": "Ines Vell",
+      "why": "Called only 'the cartographer' for the first 64 messages; her name first appears at message 65. A builder that keys on proper names alone, or that never links the epithet to the name, misses her or splits her into two entries."
+    },
+    "collision": {
+      "key": "Captain",
+      "entities": ["Mora Quill", "Oren Hale"],
+      "why": "Both are addressed as 'Captain'. A builder that gives either one the bare key fires that entry on the other's scenes."
+    },
+    "caseTrap": {
+      "entity": "Wren",
+      "why": "The street runner shares her name with the bird, which turns up in lowercase at messages 10, 30 and 79. Her entry needs caseSensitive, not a stopword."
+    }
+  },
+  "boundaries": [10, 20, 30, 40, 52, 63, 71],
+  "boundaryNotes": {
+    "52": "No narrator header; the break is signalled only by the prose ('Three days pass')."
+  }
+}

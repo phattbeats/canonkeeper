@@ -1,0 +1,700 @@
+{
+  "entries": {
+    "0": {
+      "uid": 0,
+      "key": [
+        "Tamsin",
+        "Tamsin Dray"
+      ],
+      "keysecondary": [],
+      "comment": "Tamsin Dray",
+      "content": "Tamsin Dray is a Saltgate courier, known for carrying the Morrow letters through a blockade without ever being caught. Captain Mora Quill hired her to carry the Saltwind Chart to Kestrel Lighthouse, where she struck the Lighthouse Bargain with Brother Saul. She later walked into the Magistrate's hall posing as a courier and freed Ines Vell from the cells.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 0,
+      "canonkeeper": {
+        "sources": [
+          [
+            2,
+            2
+          ],
+          [
+            12,
+            12
+          ],
+          [
+            45,
+            48
+          ],
+          [
+            63,
+            66
+          ],
+          [
+            71,
+            76
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "1": {
+      "uid": 1,
+      "key": [
+        "Mora Quill",
+        "Quill",
+        "Captain Quill"
+      ],
+      "keysecondary": [],
+      "comment": "Mora Quill",
+      "content": "Captain Mora Quill commands the ship Gull's Errand and wears a salt-stiff blue coat. She hired Tamsin Dray to carry the Saltwind Chart. Her warehouse burned in the Harbor Fire. She planned Ines Vell's rescue with the Lamplighters' Guild and sailed the Gull's Errand out past the harbor chain.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 1,
+      "canonkeeper": {
+        "sources": [
+          [
+            2,
+            8
+          ],
+          [
+            31,
+            39
+          ],
+          [
+            52,
+            62
+          ],
+          [
+            76,
+            76
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "2": {
+      "uid": 2,
+      "key": [
+        "Hale",
+        "Oren Hale",
+        "Captain Hale"
+      ],
+      "keysecondary": [],
+      "comment": "Oren Hale",
+      "content": "Captain Oren Hale is a tall harbor watch captain with a burned right hand. He serves Magistrate Kesh but let Tamsin Dray go on the docks and worked the pumps during the Harbor Fire. Kesh moved him to the cell guard as punishment. He unlocked Ines Vell's cell and asked Tamsin to strike him so that Kesh would have a story.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": true,
+      "matchWholeWords": true,
+      "displayIndex": 2,
+      "canonkeeper": {
+        "sources": [
+          [
+            8,
+            8
+          ],
+          [
+            12,
+            18
+          ],
+          [
+            32,
+            36
+          ],
+          [
+            58,
+            58
+          ],
+          [
+            67,
+            75
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "3": {
+      "uid": 3,
+      "key": [
+        "Wren"
+      ],
+      "keysecondary": [],
+      "comment": "Wren",
+      "content": "Wren is a Saltgate street runner who sells rumors by the copper and wears an oversized sailor's cap. She knows the Undercroft tunnels and kept the cartographer's workshop hidden in exchange for sweets. She caused a scene on the docks so that Tamsin could escape, and she kept watch at the Undercroft grate during the rescue.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": true,
+      "matchWholeWords": true,
+      "displayIndex": 3,
+      "canonkeeper": {
+        "sources": [
+          [
+            6,
+            9
+          ],
+          [
+            16,
+            24
+          ],
+          [
+            27,
+            29
+          ],
+          [
+            60,
+            60
+          ],
+          [
+            68,
+            69
+          ],
+          [
+            71,
+            72
+          ],
+          [
+            77,
+            77
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "4": {
+      "uid": 4,
+      "key": [
+        "Ines Vell",
+        "Ines",
+        "cartographer"
+      ],
+      "keysecondary": [],
+      "comment": "Ines Vell",
+      "content": "Ines Vell is the cartographer, who kept her name secret because names were dangerous in Saltgate. She has ink-stained hands and cropped gray hair. She drew the Saltwind Chart in a hidden workshop in the Undercroft, signing it with the initial I and a lantern. Magistrate Kesh's men seized her on a Tuesday night and held her for a treason trial; Tamsin Dray freed her.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 4,
+      "canonkeeper": {
+        "sources": [
+          [
+            4,
+            5
+          ],
+          [
+            24,
+            28
+          ],
+          [
+            41,
+            43
+          ],
+          [
+            54,
+            54
+          ],
+          [
+            65,
+            69
+          ],
+          [
+            75,
+            80
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "5": {
+      "uid": 5,
+      "key": [
+        "Brother Saul",
+        "Saul"
+      ],
+      "keysecondary": [],
+      "comment": "Brother Saul",
+      "content": "Brother Saul is the old monk who keeps the lamp at Kestrel Lighthouse; his beard is stained with lamp oil. He hid the Saltwind Chart in the lamp room in exchange for Tamsin carrying his letter to the Lamplighters' Guild (the Lighthouse Bargain). He knew the cartographer's name but had sworn not to speak it. [Edited by hand: Saul is never to be shown leaving the lighthouse.]",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 5,
+      "canonkeeper": {
+        "sources": [
+          [
+            38,
+            50
+          ],
+          [
+            77,
+            77
+          ]
+        ],
+        "pinned": true
+      }
+    },
+    "6": {
+      "uid": 6,
+      "key": [
+        "Dovrin Kesh",
+        "Kesh",
+        "Magistrate"
+      ],
+      "keysecondary": [],
+      "comment": "Dovrin Kesh",
+      "content": "Magistrate Dovrin Kesh rules Saltgate's courts from a white marble hall. He is a narrow man with ink-stained fingers, pale eyes and a silver chain of office. He enforces a tariff on boats passing the harbor chain and wants every tide chart burned. His men started the Harbor Fire, and he held Ines Vell for a treason trial whose sentence would have been drowning.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 6,
+      "canonkeeper": {
+        "sources": [
+          [
+            8,
+            8
+          ],
+          [
+            12,
+            16
+          ],
+          [
+            34,
+            34
+          ],
+          [
+            44,
+            44
+          ],
+          [
+            54,
+            54
+          ],
+          [
+            63,
+            67
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "7": {
+      "uid": 7,
+      "key": [
+        "Saltgate"
+      ],
+      "keysecondary": [],
+      "comment": "Saltgate",
+      "content": "Saltgate is a rain-soaked port city with a harbor closed by a chain, where boats pay the Magistrate's tariff to pass. The Lamplighters' Guild lights its green harbor lamps, and the Undercroft tunnels run beneath it.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 7,
+      "canonkeeper": {
+        "sources": [
+          [
+            0,
+            0
+          ],
+          [
+            10,
+            14
+          ],
+          [
+            20,
+            20
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "8": {
+      "uid": 8,
+      "key": [
+        "Drowned Lantern"
+      ],
+      "keysecondary": [],
+      "comment": "The Drowned Lantern",
+      "content": "The Drowned Lantern is the lowest tavern in Saltgate. Its floor tilts toward the harbor, it is tended by Pell the barkeep, and a hatch in its cellar opens onto the docks. Captain Mora Quill hired Tamsin Dray in its corner booth.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 8,
+      "canonkeeper": {
+        "sources": [
+          [
+            0,
+            9
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "9": {
+      "uid": 9,
+      "key": [
+        "Kestrel Lighthouse",
+        "Kestrel"
+      ],
+      "keysecondary": [],
+      "comment": "Kestrel Lighthouse",
+      "content": "Kestrel Lighthouse stands on a black rock at the end of a causeway that floods at high tide. Its lamp room holds a great turning lens and hiding places older than the Magistrate. Brother Saul keeps the lamp.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 9,
+      "canonkeeper": {
+        "sources": [
+          [
+            2,
+            2
+          ],
+          [
+            38,
+            51
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "10": {
+      "uid": 10,
+      "key": [
+        "Undercroft"
+      ],
+      "keysecondary": [],
+      "comment": "The Undercroft",
+      "content": "The Undercroft is a network of smugglers' tunnels beneath Saltgate, carved by salt merchants two centuries ago. It hid the cartographer's workshop, and it connects to a grate beneath the Magistrate's hall and to an outlet on the harbor.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 10,
+      "canonkeeper": {
+        "sources": [
+          [
+            19,
+            29
+          ],
+          [
+            60,
+            60
+          ],
+          [
+            68,
+            79
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "11": {
+      "uid": 11,
+      "key": [
+        "Saltwind Chart"
+      ],
+      "keysecondary": [],
+      "comment": "The Saltwind Chart",
+      "content": "The Saltwind Chart is a three-color tide chart, marked 'true at spring tide', showing every channel and sandbar beneath Saltgate's harbor chain. It would let boats slip past the Magistrate's tariff. Ines Vell drew it; Brother Saul hid it at Kestrel Lighthouse; the Gull's Errand escaped using its channels.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 11,
+      "canonkeeper": {
+        "sources": [
+          [
+            24,
+            29
+          ],
+          [
+            40,
+            47
+          ],
+          [
+            60,
+            60
+          ],
+          [
+            78,
+            78
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "12": {
+      "uid": 12,
+      "key": [
+        "Gull's Errand"
+      ],
+      "keysecondary": [],
+      "comment": "Gull's Errand",
+      "content": "The Gull's Errand is Captain Mora Quill's ship. Its warehouse, with a gull painted on the doors, burned in the Harbor Fire. It anchored beyond the harbor chain and slipped through an unmarked channel to carry Ines Vell out of Saltgate.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 12,
+      "canonkeeper": {
+        "sources": [
+          [
+            2,
+            2
+          ],
+          [
+            30,
+            37
+          ],
+          [
+            52,
+            62
+          ],
+          [
+            76,
+            79
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "13": {
+      "uid": 13,
+      "key": [
+        "Harbor Fire"
+      ],
+      "keysecondary": [],
+      "comment": "The Harbor Fire",
+      "content": "The Harbor Fire burned the Gull's Errand's warehouse on the morning of Day 2, after one of Magistrate Kesh's men dropped a lamp during a search for stolen charts. Half the ship's cargo was lost. Captain Hale and the Lamplighters' Guild fought the blaze alongside Captain Quill.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 13,
+      "canonkeeper": {
+        "sources": [
+          [
+            30,
+            37
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "14": {
+      "uid": 14,
+      "key": [
+        "Lighthouse Bargain"
+      ],
+      "keysecondary": [],
+      "comment": "The Lighthouse Bargain",
+      "content": "The Lighthouse Bargain was struck at Kestrel Lighthouse on Day 2: Brother Saul would hide the Saltwind Chart, and in return Tamsin Dray would carry his sealed letter to the Lamplighters' Guild.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 14,
+      "canonkeeper": {
+        "sources": [
+          [
+            44,
+            50
+          ]
+        ],
+        "pinned": false
+      }
+    },
+    "15": {
+      "uid": 15,
+      "key": [
+        "Lamplighters' Guild",
+        "Lamplighters"
+      ],
+      "keysecondary": [],
+      "comment": "Lamplighters' Guild",
+      "content": "The Lamplighters' Guild lights every lamp in Saltgate, including the green-glass harbor lamps. Its master owed Brother Saul a favor. The Guild has a lamplighter inside the Magistrate's hall, and on the night of the rescue it put out every lamp in the Magistrate's quarter.",
+      "constant": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "caseSensitive": false,
+      "matchWholeWords": true,
+      "displayIndex": 15,
+      "canonkeeper": {
+        "sources": [
+          [
+            10,
+            14
+          ],
+          [
+            32,
+            32
+          ],
+          [
+            46,
+            48
+          ],
+          [
+            54,
+            54
+          ],
+          [
+            70,
+            71
+          ]
+        ],
+        "pinned": false
+      }
+    }
+  }
+}
