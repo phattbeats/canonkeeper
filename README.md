@@ -109,6 +109,8 @@ npm run build:live     # replay the recorded session, then gate it with --live
 
 This drives a fresh SillyTavern through a real browser for the whole fixture story: 40 turns (one per user line) with no reload. It installs the extension from the repo URL and makes two connection profiles, the writer (claude-sonnet-5) and the detector (claude-haiku-4-5). It ticks **Live mode** in the panel. Then it types each of the story's user lines into the chat box and sends it. The narrator's replies come from real SillyTavern generations, served by a small OpenAI-compatible endpoint in the driver that answers with the story's next narrator message. So the chat comes out as the fixture, and its scene starts can be scored against the answer key. Every check reads SillyTavern's HTTP API from outside the page: the state store in the chat file, the lorebook file, and that the page's origin never changed. It writes `session.log`, screenshots and a run directory, then gates it with `--live`.
 
+On 2026-10-04 it ran against SillyTavern 1.19.0, at a reading pace of about 12 s per turn. The story played out with no reload: the page origin never changed, and the chat file matched the fixture message for message. The state store in the chat file recorded 14 cycles: 13 detection calls for 81 messages, and 7 updates, one per scene end. When a tick was still busy, the next one judged everything waiting, so some calls covered 6–12 messages. The scene starts were exactly the answer key's 7. The gate passed every check: I1–I6, C7, C8 and L11.
+
 ```bash
 ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0.1:8000 \
 BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-session.mjs

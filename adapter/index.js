@@ -159,7 +159,7 @@ const html = `
         <input id="canonkeeper_live" type="checkbox">
         <span>Live mode: keep the lorebook up to date while you play</span>
       </label>
-      <small>A cheap model checks for a new scene every few messages. When a scene ends, the book is brought up to date with it.</small>
+      <div><small>A cheap model checks for a new scene every few messages. When a scene ends, the book is brought up to date with it.</small></div>
       <label for="canonkeeper_detect_profile">Scene detection profile (a cheap, fast model)</label>
       <select id="canonkeeper_detect_profile" class="text_pole"></select>
       <div class="canonkeeper-row">

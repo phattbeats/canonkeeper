@@ -17,7 +17,7 @@
 //   RP_PORT     port for the roleplay endpoint (default 8124); SillyTavern's
 //               server must reach it on 127.0.0.1
 //   CADENCE     live mode's "check every" (default 4)
-//   PACE_MS     pause after each reply, as a reader would (default 2000)
+//   PACE_MS     pause after each reply, as a reader would (default 10000)
 
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
@@ -35,7 +35,7 @@ const BROWSER = env('BROWSER_WS');
 const PROXY_URL = env('PROXY_URL');
 const RP_PORT = Number(env('RP_PORT', '8124'));
 const CADENCE = Number(env('CADENCE', '4'));
-const PACE_MS = Number(env('PACE_MS', '2000'));
+const PACE_MS = Number(env('PACE_MS', '10000'));
 const REPO_URL = 'https://github.com/phattbeats/canonkeeper';
 const REPO = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..');
 const WRITER = 'Claude Sonnet 5 (anthropic-proxy)';
@@ -269,9 +269,12 @@ async function main() {
     let lastCycles = 0;
     for (let i = 1; i < story.length; ) {
         if (story[i].is_user) {
-            await command(page, story[i].mes);
+            // A user line the story doesn't answer goes in with /send, which
+            // adds it without asking the character for a reply.
+            const answered = story[i + 1] && !story[i + 1].is_user;
+            await command(page, answered ? story[i].mes : `/send ${story[i].mes}`);
             turns++;
-            const n = story[i + 1] && !story[i + 1].is_user ? i + 2 : i + 1;
+            const n = answered ? i + 2 : i + 1;
             await waitForChat(page, n);
             i = n;
         } else {
@@ -294,17 +297,18 @@ async function main() {
     }
     log(`[session] story played: ${turns} turns, ${story.length} messages`);
 
-    // 6. Let the last ticks finish: the state store stops changing.
+    // 6. Let live mode catch up: every message but the newest judged, the
+    // book up to the last scene start, and no tick running in the page.
     const until = Date.now() + SETTLE_TIMEOUT;
-    let still = 0;
-    let prev = '';
-    while (Date.now() < until && still < 4) {
+    for (;;) {
         await sleep(15000);
         const live = stateOf(await readChat())?.live;
-        const now = JSON.stringify([live?.cycles.length, live?.hashes.length]);
-        still = now === prev ? still + 1 : 0;
-        prev = now;
-        log(`[server] settling: ${live?.cycles.length} cycles, ${live?.hashes.length} messages judged`);
+        const through = live?.cycles.filter((c) => c.update?.ok).at(-1)?.update.through;
+        const busy = await page.evaluate(() => !!document.querySelector('#canonkeeper_status .canonkeeper-running'));
+        const judged = live?.hashes.length ?? 0;
+        log(`[server] settling: ${live?.cycles.length} cycles, ${judged} messages judged, book through ${through}, last start ${live?.starts.at(-1)}, tick running in the page: ${busy}`);
+        if (!busy && judged >= story.length - CADENCE && through === (live.starts.at(-1) ?? 0) - 1) break;
+        if (Date.now() > until) throw new Error(`live mode did not catch up within ${SETTLE_TIMEOUT / 60000} min`);
     }
     const endOrigin = await page.evaluate(() => performance.timeOrigin);
     log(`[ui] page origin at the end ${endOrigin}; same page as the start: ${endOrigin === origin}; load events since the chat opened: ${loads}`);
