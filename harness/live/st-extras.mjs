@@ -141,6 +141,21 @@ async function command(page, text) {
     log(`[ui] typing '${text.length > 80 ? `${text.slice(0, 80)}...` : text}' into the chat box and pressing Enter`);
     await page.fill('#send_textarea', text);
     await page.press('#send_textarea', 'Enter');
+    // An autocomplete popup can take the first Enter: the box keeps the text.
+    for (let i = 0; i < 3; i++) {
+        await sleep(700);
+        if (!(await page.inputValue('#send_textarea'))) return;
+        log('[ui] the chat box still holds the command (autocomplete took the Enter): closing it and pressing Enter again');
+        await page.keyboard.press('Escape');
+        await page.press('#send_textarea', 'Enter');
+    }
+    throw new Error(`the command '${text}' was never sent`);
+}
+
+/** A Canonkeeper toast on the page, as the user reads it, or null. */
+async function toast(page) {
+    const t = await page.$('#toast-container .toast-error, #toast-container .toast-warning');
+    return t ? (await t.innerText()).replace(/\s+/g, ' ') : null;
 }
 
 async function openDrawer(page, id) {
@@ -181,9 +196,12 @@ async function capture(page, label) {
     return messages;
 }
 
-async function waitForRecord(after, label, pick) {
+async function waitForRecord(after, label, pick, page) {
     const until = Date.now() + RUN_TIMEOUT;
+    let seen = null;
     while (Date.now() < until) {
+        const said = page ? await toast(page) : null;
+        if (said && said !== seen) log(`[ui] ${label}: toast on the page: '${(seen = said)}'`);
         const chat = await readChat();
         const rec = pick(stateOf(chat));
         if (rec && new Date(rec.at).getTime() >= after) {
@@ -191,6 +209,7 @@ async function waitForRecord(after, label, pick) {
             for (const line of rec.log ?? []) log(`[server]   ${line}`);
             return { chat, rec };
         }
+        if (said && /already running|Open a chat|Pick a connection|Wait for the reply/.test(said)) throw new Error(`${label}: refused: ${said}`);
         await sleep(3000);
     }
     throw new Error(`${label}: nothing recorded within ${RUN_TIMEOUT / 60000} min`);
@@ -312,7 +331,7 @@ async function main() {
     log(`[ui] opened chat '${CHAT}': ${CUT} messages`);
     const t0 = Date.now();
     await command(page, '/canon');
-    const { rec: built } = await waitForRecord(t0, '/canon', (s) => s?.lastRun);
+    const { rec: built } = await waitForRecord(t0, '/canon', (s) => s?.lastRun, page);
     if (!built.ok) throw new Error(`/canon failed: ${built.error}`);
     await idle(page);
     await sleep(3000);
@@ -321,6 +340,14 @@ async function main() {
     log(`[server] lorebook '${bookName}': ${Object.keys(JSON.parse(builtBook).entries).length} entries; scene starts ${JSON.stringify(built.scenes)}`);
     const scanDepth = await page.evaluate(() => $('#world_info_depth').val());
     log(`[ui] SillyTavern World Info scan depth: ${scanDepth}`);
+    // A window the whole chat fits in, so no message is cut from the prompt
+    // and two prompts compare message for message.
+    const context = await page.evaluate(() => {
+        $('#oai_max_context_unlocked').prop('checked', true).trigger('input').trigger('change');
+        $('#openai_max_context').val(32000).trigger('input').trigger('change');
+        return $('#openai_max_context').val();
+    });
+    log(`[ui] roleplay context window set to ${context} tokens`);
 
     // 4. Recall: off twice, on, broken.
     const x = { recall: { ...RECALL, broken: [] }, clip: {} };
@@ -334,6 +361,7 @@ async function main() {
     log('[ui] Recall ticked in the panel');
     x.recall.on = await capture(page, 'recall-on');
     await sleep(1500);
+    if (x.recall.on.length !== x.recall.off.length + 1) log(`[check] recall on: ${x.recall.on.length} messages vs ${x.recall.off.length} with recall off`);
     const uids = await page.$$eval('#canonkeeper_status .canonkeeper-recalled', (els) => els.map((e) => Number(e.dataset.uid)));
     const book = JSON.parse(builtBook).entries;
     x.recall.picks = uids.map((uid) => ({ uid, title: book[uid].comment, content: book[uid].content }));
@@ -364,7 +392,7 @@ async function main() {
     x.clip.broken = { bookBefore: await bookText(bookName) };
     const t1 = Date.now();
     await command(page, `/canon-clip at=${CLIP_AT}`);
-    const { rec: failed } = await waitForRecord(t1, 'broken clip', (s) => s?.clips?.at(-1));
+    const { rec: failed } = await waitForRecord(t1, 'broken clip', (s) => s?.clips?.at(-1), page);
     await idle(page);
     await sleep(2000);
     x.clip.broken.error = failed.ok ? null : failed.error;
@@ -407,7 +435,7 @@ async function main() {
     await sleep(800);
     await page.click(`#chat .mes[mesid="${CLIP_AT}"] .canonkeeper_clip`);
     log(`[ui] opened message ${CLIP_AT}'s actions and pressed the clip button`);
-    const { rec: clipped } = await waitForRecord(t2, 'clip', (s) => s?.clips?.at(-1));
+    const { rec: clipped } = await waitForRecord(t2, 'clip', (s) => s?.clips?.at(-1), page);
     if (!clipped.ok) throw new Error(`the clip failed: ${clipped.error}`);
     await sleep(2000);
     await shot(page, '05-clipped.png');
@@ -421,7 +449,7 @@ async function main() {
     // 7. /canon after the clip: no write, the clip held.
     const t3 = Date.now();
     await command(page, '/canon');
-    const { rec: again } = await waitForRecord(t3, '/canon after the clip', (s) => s?.lastRun);
+    const { rec: again } = await waitForRecord(t3, '/canon after the clip', (s) => s?.lastRun, page);
     await idle(page);
     await sleep(2000);
     x.clip.working.canon = { ok: again.ok, plan: again.plan, held: again.held };

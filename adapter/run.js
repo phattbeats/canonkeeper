@@ -468,29 +468,128 @@ export async function runClip(st, { at, text }) {
 
 // --- Recall -------------------------------------------------------------------
 
+/** The extension prompt recall writes its block to. Nothing else uses it. */
+export const RECALL_PROMPT = 'canonkeeper_recall';
+
+/** How long recall may hold up a generation before it is skipped. */
+export const RECALL_TIMEOUT_MS = 1000;
+
 /**
- * The entries recall adds this turn (src/recall.js), from the chat's bound
- * lorebook and the scene starts Canonkeeper knows for it. Each comes back as
- * the full entry with `world` set to its book, which is what SillyTavern's
- * WORLDINFO_FORCE_ACTIVATE takes. Reads only; writes nothing anywhere.
- * `settings` is { recallEntries, recallTokens }, `scanDepth` SillyTavern's.
+ * What recall reads for one generation: the chat's bound lorebook, the chat,
+ * and the scene starts Canonkeeper knows for that book. Reads only.
  */
-export async function recallFor({ chat, metadata, loadBook, settings, scanDepth }) {
+export async function recallInputs({ chat, metadata, loadBook, settings, scanDepth }) {
     const bookName = metadata?.world_info;
-    if (!bookName) return { book: null, picks: [], entries: [] };
+    if (!bookName) return null;
     const book = (await loadBook(bookName)) ?? { entries: {} };
     const state = metadata[STATE_KEY] ?? {};
     const mine = state.book === bookName;
-    const starts = mine ? [...(state.ledger?.scenes ?? []), ...(state.live?.starts ?? [])] : [];
-    const entries = Object.values(book.entries ?? {});
-    const out = recall({
-        entries,
+    return {
+        book: bookName,
+        entries: Object.values(book.entries ?? {}),
         messages: toMessages(chat),
-        starts,
+        starts: mine ? [...(state.ledger?.scenes ?? []), ...(state.live?.starts ?? [])] : [],
         maxEntries: Number(settings.recallEntries) || DEFAULT_RECALL.maxEntries,
         budgetTokens: Number(settings.recallTokens) || DEFAULT_RECALL.budgetTokens,
         scanDepth: Number(scanDepth) || DEFAULT_RECALL.scanDepth,
-    });
-    const byUid = new Map(entries.map((e) => [e.uid, e]));
-    return { book: bookName, ...out, entries: out.picks.map((p) => ({ ...structuredClone(byUid.get(p.uid)), world: bookName })) };
+    };
+}
+
+/** The picks for `inputs`, leaving out the uids in `exclude`, with their entries. */
+export function recallPicks(inputs, exclude = new Set()) {
+    const out = recall({ ...inputs, exclude });
+    const byUid = new Map(inputs.entries.map((e) => [e.uid, e]));
+    return { ...out, entries: out.picks.map((p) => byUid.get(p.uid)) };
+}
+
+/** The block recall adds: the picked entries' text, one per line, as World Info joins its own. */
+export const recallBlock = (entries) => entries.map((e) => String(e.content).trim()).join('\n');
+
+/**
+ * Recall across one generation. SillyTavern calls `intercept` before it
+ * scans World Info (the generate interceptor), `activated` with what that
+ * scan activated (WORLD_INFO_ACTIVATED), and `end` when the reply is done.
+ *
+ *   intercept   clears the block first, then picks and writes it
+ *   activated   picks again without what World Info already has (an entry
+ *               another entry's text names comes in by recursion, which
+ *               plain code can't see coming), and rewrites the block
+ *   end         clears the block, so it never outlives its generation
+ *
+ * The block is its own extension prompt, never scanned by World Info, so
+ * World Info comes out exactly as it would with recall off: recall can only
+ * add. Any failure, or a pick slower than RECALL_TIMEOUT_MS, leaves the
+ * block empty, which is the prompt recall off gives. Nothing is written.
+ *
+ * `deps`: settings() (the extension's), inputs() (recallInputs for the open
+ * chat), setPrompt(text), log(line).
+ */
+export function recallSession({ settings, inputs, setPrompt, log = () => {}, timeoutMs = RECALL_TIMEOUT_MS }) {
+    let pending = null;
+    const session = { last: null };
+    const clear = () => {
+        pending = null;
+        setPrompt('');
+    };
+    const fail = (at, err) => {
+        session.last = { at, ok: false, error: err.message };
+        log(`recall failed, nothing added: ${err.message}`);
+        try {
+            clear();
+        } catch (e) {
+            log(`recall could not clear its block: ${e.message}`);
+        }
+    };
+    const write = (at, data, out, inPrompt) => {
+        setPrompt(recallBlock(out.entries));
+        session.last = { at, ok: true, book: data.book, scene: out.scene, considered: out.considered, picks: out.picks, inPrompt };
+    };
+
+    session.intercept = async (type) => {
+        clear();
+        if (!settings().recall || type === 'quiet') return;
+        const at = Date.now();
+        try {
+            // A pick that arrives late is dropped, never handed to a later reply.
+            const work = inputs();
+            const data = await Promise.race([work, new Promise((r) => setTimeout(() => r(undefined), timeoutMs))]);
+            if (data === undefined) {
+                work.catch(() => {});
+                throw new Error(`took longer than ${timeoutMs} ms; skipped`);
+            }
+            if (!data) {
+                session.last = { at, ok: true, book: null, scene: null, considered: 0, picks: [] };
+                return;
+            }
+            const out = recallPicks(data);
+            write(at, data, out, 0);
+            pending = { at, data };
+        } catch (err) {
+            fail(at, err);
+        }
+    };
+
+    session.activated = (entries) => {
+        if (!pending) return;
+        const { at, data } = pending;
+        try {
+            const inPrompt = new Set((entries ?? []).filter((e) => e?.world === data.book).map((e) => e.uid));
+            const out = recallPicks(data, inPrompt);
+            write(at, data, out, inPrompt.size);
+        } catch (err) {
+            fail(at, err);
+        }
+    };
+
+    session.end = () => {
+        const ended = pending;
+        try {
+            clear();
+        } catch (err) {
+            log(`recall could not clear its block: ${err.message}`);
+        }
+        const r = session.last;
+        if (ended && r?.ok && r.picks.length) log(`recall added ${r.picks.map((p) => `'${p.title}' (~${p.tokens} tokens)`).join(', ')}; ${r.inPrompt} entries were already in World Info`);
+    };
+    return session;
 }

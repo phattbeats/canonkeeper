@@ -18,7 +18,8 @@ import { heldEntries } from '../src/plan.js';
 import { entryKeyRegex } from '../src/match.js';
 import { parseTranscript } from '../src/transcript.js';
 import { replay } from '../src/models/replay.js';
-import { runCanon, runClip, recallFor, toMessages, STATE_KEY } from '../adapter/run.js';
+import { runCanon, runClip, recallInputs, recallSession, toMessages, STATE_KEY } from '../adapter/run.js';
+import { checkX15Recall, checkX16Clip } from '../harness/checks.js';
 
 const STORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'story');
 const text = readFileSync(join(STORY, 'transcript.jsonl'), 'utf8');
@@ -81,114 +82,122 @@ test('recall skips disabled, constant and keyless entries, and an empty chat', (
     assert.deepEqual(recall({ entries, messages: [], starts }).picks, []);
 });
 
-// --- The adapter's recall, and the interceptor in a fake SillyTavern -------------
+// --- Recall across a generation (adapter/run.js recallSession) -----------------
 
-const metaFor = (extra = {}) => ({ world_info: 'Book', [STATE_KEY]: { book: 'Book', ledger: { scenes: starts } }, ...extra });
-
-test('recallFor hands back full entries, each with its book as `world`', async () => {
-    const out = await recallFor({ chat: chat.slice(0, 50), metadata: metaFor(), loadBook: async () => structuredClone(reference), settings: { recallEntries: 3, recallTokens: 600 }, scanDepth: 2 });
-    assert.equal(out.book, 'Book');
-    assert.equal(out.entries.length, out.picks.length);
-    for (const e of out.entries) {
-        assert.equal(e.world, 'Book');
-        assert.deepEqual({ ...e, world: undefined }, { ...reference.entries[e.uid], world: undefined });
-    }
-    const unbound = await recallFor({ chat: chat.slice(0, 50), metadata: {}, loadBook: async () => reference, settings: {} });
-    assert.deepEqual(unbound.entries, []);
-});
-
-/** SillyTavern, as far as the interceptor sees it. `emitted` is every WORLDINFO_FORCE_ACTIVATE. */
-function fakePage() {
-    const page = {
-        emitted: [],
-        settings: { canonkeeper: { recall: true } },
-        chat: chat.slice(0, 50),
-        metadata: metaFor(),
-        loadWorldInfo: async () => structuredClone(reference),
-    };
-    globalThis.SillyTavern = {
-        getContext: () => ({
-            extensionSettings: page.settings,
-            chat: page.chat,
-            chatMetadata: page.metadata,
-            loadWorldInfo: (name) => page.loadWorldInfo(name),
-            eventTypes: { WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate' },
-            eventSource: { emit: async (type, data) => page.emitted.push({ type, data }) },
-        }),
-    };
-    return page;
-}
-
-let interceptor = null;
-async function loadInterceptor() {
-    if (interceptor) return interceptor;
-    globalThis.jQuery = () => {};
-    globalThis.$ = () => ({ val: () => '2' });
-    const info = console.info;
-    console.info = () => {};
-    await import('../adapter/index.js');
-    console.info = info;
-    interceptor = (...args) => {
-        const quiet = console.info;
-        console.info = () => {};
-        return globalThis.canonkeeperRecall(...args).finally(() => (console.info = quiet));
-    };
-    return interceptor;
-}
+const metaFor = () => ({ world_info: 'Book', [STATE_KEY]: { book: 'Book', ledger: { scenes: starts } } });
 
 /**
- * The entries SillyTavern puts in the prompt: those keyword activation finds
- * in the scan window, plus those forced. This is all recall can change.
+ * A generation as SillyTavern runs it, as far as recall sees it: the
+ * interceptor, then World Info's scan (keyword activation in the scan window,
+ * plus `recursive`, entries another entry's text brings in), then the prompt,
+ * then the end. Returns the prompt: World Info, then recall's block.
  */
-function promptEntries(page) {
-    const scanned = toMessages(page.chat).slice(-2);
-    const keyword = entries.filter((e) => fires(e, scanned).length).map((e) => e.uid);
-    const forced = page.emitted.flatMap((x) => x.data.map((e) => e.uid));
-    return [...new Set([...keyword, ...forced])].sort((a, b) => a - b);
+async function generate(session, page, { recursive = [], type = 'normal' } = {}) {
+    await session.intercept(type);
+    const scanned = toMessages(page.chat.filter((m) => typeof m.mes === 'string')).slice(-2);
+    const wi = entries.filter((e) => fires(e, scanned).length || recursive.includes(e.uid));
+    session.activated(wi.map((e) => ({ ...e, world: 'Book' })));
+    const prompt = { worldInfo: wi.map((e) => e.content).join('\n'), recall: page.block };
+    session.end();
+    assert.equal(page.block, '', 'the block never outlives its generation');
+    return prompt;
 }
 
-test('the interceptor nominates recall\'s picks through WORLDINFO_FORCE_ACTIVATE', async () => {
-    const run = await loadInterceptor();
-    const page = fakePage();
-    await run(page.chat, 100000, () => assert.fail('recall must never abort a generation'), 'normal');
-    assert.equal(page.emitted.length, 1);
-    assert.equal(page.emitted[0].type, 'worldinfo_force_activate');
-    assert.ok(page.emitted[0].data.length > 0 && page.emitted[0].data.every((e) => e.world === 'Book' && Number.isInteger(e.uid)));
+function fakeSession() {
+    const page = {
+        block: '',
+        settings: { recall: true, recallEntries: 3, recallTokens: 600 },
+        chat: chat.slice(0, 50),
+        metadata: metaFor(),
+        loadBook: async () => structuredClone(reference),
+        logs: [],
+    };
+    const session = recallSession({
+        settings: () => page.settings,
+        inputs: () => recallInputs({ chat: page.chat, metadata: page.metadata, loadBook: () => page.loadBook(), settings: page.settings, scanDepth: 2 }),
+        setPrompt: (text) => (page.block = text),
+        log: (line) => page.logs.push(line),
+        timeoutMs: 200,
+    });
+    return { page, session };
+}
+
+test('recall adds one block of entries World Info left out, and nothing else', async () => {
+    const { page, session } = fakeSession();
+    const prompt = await generate(session, page);
+    assert.ok(session.last.ok && session.last.picks.length > 0 && session.last.picks.length <= 3);
+    const picked = session.last.picks.map((p) => reference.entries[p.uid]);
+    assert.equal(prompt.recall, picked.map((e) => e.content.trim()).join('\n'));
+    for (const e of picked) assert.ok(!prompt.worldInfo.includes(e.content), `'${e.comment}' is not in World Info already`);
+    page.settings.recall = false;
+    const off = await generate(session, page);
+    assert.deepEqual(off, { worldInfo: prompt.worldInfo, recall: '' }, 'World Info is the same with recall on and off');
 });
 
-test('recall off, or a quiet generation: nothing is nominated', async () => {
-    const run = await loadInterceptor();
-    const page = fakePage();
-    page.settings.canonkeeper.recall = false;
-    await run(page.chat, 100000, () => {}, 'normal');
-    page.settings.canonkeeper.recall = true;
-    await run(page.chat, 100000, () => {}, 'quiet');
-    assert.deepEqual(page.emitted, []);
+test('an entry World Info brings in by recursion is not added again', async () => {
+    const { page, session } = fakeSession();
+    await generate(session, page);
+    const first = session.last.picks.map((p) => p.uid);
+    const prompt = await generate(session, page, { recursive: [first[0]] });
+    const now = session.last.picks.map((p) => p.uid);
+    assert.ok(!now.includes(first[0]));
+    assert.ok(prompt.worldInfo.includes(reference.entries[first[0]].content));
+    assert.ok(!prompt.recall.includes(reference.entries[first[0]].content));
+    assert.equal(session.last.inPrompt >= 1, true);
+});
+
+test('recall off, or a quiet generation: no block', async () => {
+    const { page, session } = fakeSession();
+    page.settings.recall = false;
+    assert.equal((await generate(session, page)).recall, '');
+    page.settings.recall = true;
+    assert.equal((await generate(session, page, { type: 'quiet' })).recall, '');
 });
 
 test('broken recall leaves the prompt exactly as recall off would', async () => {
-    const run = await loadInterceptor();
-    const off = fakePage();
-    off.settings.canonkeeper.recall = false;
-    await run(off.chat, 100000, () => assert.fail('aborted'), 'normal');
-    const baseline = promptEntries(off);
+    const off = fakeSession();
+    off.page.settings.recall = false;
+    const baseline = await generate(off.session, off.page);
 
     const breaks = {
         'a corrupt state store': (p) => (p.metadata[STATE_KEY].live = { starts: 7 }),
-        'the book failing to load': (p) => (p.loadWorldInfo = async () => {
+        'the book failing to load': (p) => (p.loadBook = async () => {
             throw new Error('disk on fire');
         }),
-        'a message with no text': (p) => (p.chat = [...p.chat.slice(0, -1), { name: 'x', is_user: false }]),
-        'a book that answers too late': (p) => (p.loadWorldInfo = () => new Promise((r) => setTimeout(() => r(structuredClone(reference)), 1300))),
+        'a book that answers too late': (p) => (p.loadBook = () => new Promise((r) => setTimeout(() => r(structuredClone(reference)), 400))),
     };
     for (const [what, breakIt] of Object.entries(breaks)) {
-        const page = fakePage();
+        const { page, session } = fakeSession();
         breakIt(page);
-        await run(page.chat, 100000, () => assert.fail(`aborted on ${what}`), 'normal');
-        await new Promise((r) => setTimeout(r, what.includes('late') ? 500 : 0));
-        assert.deepEqual(page.emitted, [], `${what}: nothing nominated, even after the fact`);
-        if (!what.includes('no text')) assert.deepEqual(promptEntries(page), baseline, `${what}: same entries as recall off`);
+        const prompt = await generate(session, page);
+        assert.deepEqual(prompt, baseline, `${what}: same prompt as recall off`);
+        assert.equal(session.last.ok, false, what);
+        await new Promise((r) => setTimeout(r, what.includes('late') ? 300 : 0));
+        assert.equal(page.block, '', `${what}: nothing written after the fact`);
     }
+
+    // A message with no text: toMessages throws, so recall does nothing.
+    const { page, session } = fakeSession();
+    page.chat = [...page.chat.slice(0, -1), { name: 'x', is_user: false }];
+    const prompt = await generate(session, page);
+    assert.equal(prompt.recall, '');
+    assert.equal(session.last.ok, false);
+
+    // World Info's report is unreadable: the block it had is taken back.
+    const late = fakeSession();
+    await late.session.intercept('normal');
+    assert.notEqual(late.page.block, '');
+    late.session.activated(42);
+    assert.equal(late.page.block, '');
+    assert.equal(late.session.last.ok, false);
+    late.session.end();
+});
+
+test('a chat with no lorebook bound: recall adds nothing and does not fail', async () => {
+    const { page, session } = fakeSession();
+    page.metadata = {};
+    assert.equal((await generate(session, page)).recall, '');
+    assert.equal(session.last.ok, true);
 });
 
 // --- Clips ------------------------------------------------------------------------
@@ -334,4 +343,77 @@ test('the audit reads a clip as held, checks its blurb, and finds nothing techni
     const mine = record.findings.filter((f) => f.uids?.includes(entry.uid) || f.message.includes(entry.comment));
     assert.deepEqual(mine, []);
     assert.ok(record.claims.total >= 1);
+});
+
+// --- The gate's X15 and X16, on made-up evidence: green, then red ----------------
+
+function evidence() {
+    const off = [{ role: 'system', content: 'Main prompt.\nWorld Info entry.' }, { role: 'user', content: 'Hello.' }];
+    const picks = [{ uid: 3, title: 'A', content: 'Entry A.' }, { uid: 5, title: 'B', content: 'Entry B.' }];
+    const book = { entries: { 1: { uid: 1, comment: 'One', key: ['one'], content: 'x' } } };
+    const clipped = { entries: { ...book.entries, 9: { uid: 9, comment: 'Clip: c', key: ['green wax'], content: 'c', canonkeeper: { clip: { at: 48 } } } } };
+    return {
+        recall: {
+            maxEntries: 3,
+            budgetTokens: 600,
+            off,
+            off2: structuredClone(off),
+            on: [off[0], { role: 'system', content: 'Entry A.\nEntry B.' }, off[1]],
+            picks,
+            broken: [{ what: 'a corrupt state store', prompt: structuredClone(off) }],
+        },
+        clip: {
+            broken: { error: 'not valid JSON', bookBefore: JSON.stringify(book), bookAfter: JSON.stringify(book), prompt: structuredClone(off) },
+            working: {
+                bookBefore: JSON.stringify(book),
+                bookAfter: JSON.stringify(clipped),
+                bookAfterCanon: JSON.stringify(clipped),
+                canon: { ok: true, plan: [], held: [{ uid: 9, title: 'Clip: c', reason: 'clip' }] },
+                firesInScan: false,
+                prompt: structuredClone(off),
+            },
+        },
+    };
+}
+
+test('X15 and X16 are green on a run that keeps the rule', () => {
+    const x = evidence();
+    assert.equal(checkX15Recall(x).ok, true, JSON.stringify(checkX15Recall(x).detail));
+    assert.equal(checkX16Clip(x).ok, true, JSON.stringify(checkX16Clip(x).detail));
+});
+
+test('X15 goes red when broken recall changes the prompt, or recall reorders it', () => {
+    const changed = evidence();
+    changed.recall.broken[0].prompt[0].content += '\nEntry A.';
+    assert.equal(checkX15Recall(changed).ok, false);
+    const reordered = evidence();
+    reordered.recall.on = [{ role: 'system', content: 'World Info entry.\nMain prompt.' }, { role: 'system', content: 'Entry A.\nEntry B.' }, reordered.recall.off[1]];
+    assert.equal(checkX15Recall(reordered).ok, false);
+    const unstable = evidence();
+    unstable.recall.off2[1].content = 'Hi.';
+    assert.equal(checkX15Recall(unstable).ok, false);
+    const nothing = evidence();
+    nothing.recall.picks = [];
+    nothing.recall.on = nothing.recall.off;
+    assert.equal(checkX15Recall(nothing).ok, false, 'a working case that adds nothing proves nothing');
+    assert.equal(checkX15Recall({}).ok, false);
+});
+
+test('X16 goes red when a failed clip writes, a clip touches another entry, or /canon rewrites it', () => {
+    const wrote = evidence();
+    wrote.clip.broken.bookAfter = wrote.clip.working.bookAfter;
+    assert.equal(checkX16Clip(wrote).ok, false);
+    const touched = evidence();
+    const after = JSON.parse(touched.clip.working.bookAfter);
+    after.entries[1].key = [];
+    touched.clip.working.bookAfter = JSON.stringify(after);
+    touched.clip.working.bookAfterCanon = touched.clip.working.bookAfter;
+    assert.equal(checkX16Clip(touched).ok, false);
+    const rewritten = evidence();
+    rewritten.clip.working.canon.plan = ['update 9'];
+    assert.equal(checkX16Clip(rewritten).ok, false);
+    const unheld = evidence();
+    unheld.clip.working.canon.held = [];
+    assert.equal(checkX16Clip(unheld).ok, false);
+    assert.equal(checkX16Clip({}).ok, false);
 });

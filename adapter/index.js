@@ -3,7 +3,7 @@
 // SillyTavern.getContext() API, so it doesn't depend on where the extension
 // is installed. The run itself is run.js; this file only wires it up.
 
-import { runCanon, runLive, runAudit, runClip, recallFor, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
+import { runCanon, runLive, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
 const ctx = () => SillyTavern.getContext();
@@ -271,12 +271,6 @@ function onClipButton() {
 
 // --- Recall -------------------------------------------------------------------
 
-/** How long recall may hold up a generation before it is skipped. */
-const RECALL_TIMEOUT_MS = 1000;
-
-/** What recall did on the last generation, for the status view. Kept in memory only. */
-let lastRecall = null;
-
 /** SillyTavern's World Info scan depth, as its own settings panel shows it. */
 function scanDepth() {
     const n = Number($('#world_info_depth').val());
@@ -284,34 +278,21 @@ function scanDepth() {
 }
 
 /**
- * The generation interceptor (manifest.json). Before SillyTavern scans World
- * Info for a reply, it nominates the entries recall picks, through
- * SillyTavern's own WORLDINFO_FORCE_ACTIVATE, and the scan does the rest.
- * Anything that goes wrong (a throw, a slow book, a corrupt state) means no
- * nomination at all, and the generation goes ahead exactly as it would with
- * recall off. It never aborts a generation and never writes.
+ * Recall's block is its own extension prompt (IN_PROMPT, as a system
+ * message), never scanned by World Info. See recallSession in run.js.
  */
-globalThis.canonkeeperRecall = async (chat, contextSize, abort, type) => {
-    const s = settings();
-    if (!s.recall || type === 'quiet') return;
-    const started = Date.now();
-    try {
+const recallState = recallSession({
+    settings,
+    inputs: () => {
         const c = ctx();
-        // A pick that arrives late is dropped, never handed to a later reply.
-        const work = recallFor({ chat: c.chat, metadata: c.chatMetadata, loadBook: c.loadWorldInfo, settings: s, scanDepth: scanDepth() });
-        const out = await Promise.race([work, new Promise((r) => setTimeout(r, RECALL_TIMEOUT_MS))]);
-        if (!out) {
-            work.catch(() => {});
-            throw new Error(`took longer than ${RECALL_TIMEOUT_MS} ms; skipped`);
-        }
-        if (out.entries.length) await c.eventSource.emit(c.eventTypes.WORLDINFO_FORCE_ACTIVATE, out.entries);
-        lastRecall = { at: started, ok: true, book: out.book, scene: out.scene, considered: out.considered ?? 0, picks: out.picks };
-        if (out.picks.length) log(`recall: ${out.picks.map((p) => `'${p.title}' (~${p.tokens} tokens)`).join(', ')}`);
-    } catch (err) {
-        lastRecall = { at: started, ok: false, error: err.message };
-        log(`recall failed, nothing added: ${err.message}`);
-    }
-};
+        return recallInputs({ chat: c.chat, metadata: c.chatMetadata, loadBook: c.loadWorldInfo, settings: settings(), scanDepth: scanDepth() });
+    },
+    setPrompt: (text) => ctx().setExtensionPrompt(RECALL_PROMPT, text, 0, 0, false, 0),
+    log,
+});
+
+/** The generate interceptor (manifest.json): runs before SillyTavern scans World Info. Never aborts. */
+globalThis.canonkeeperRecall = async (chat, contextSize, abort, type) => recallState.intercept(type);
 
 // --- Live mode ----------------------------------------------------------------
 
@@ -438,7 +419,7 @@ async function renderStatus(phase) {
         if (last.log?.length) parts.push(`<details><summary>Run log</summary><pre>${esc(last.log.join('\n'))}</pre></details>`);
     }
     if (settings().live || state?.live) parts.push(liveStatus(state?.live));
-    if (settings().recall || lastRecall) parts.push(recallStatus());
+    if (settings().recall || recallState.last) parts.push(recallStatus());
     if (state?.clips?.length) parts.push(clipStatus(state.clips));
     const bookName = state?.book;
     const bound = c.chatMetadata.world_info;
@@ -494,12 +475,12 @@ function auditStatus(a, current) {
 /** What recall added to the last reply's prompt. */
 function recallStatus() {
     const head = `<b>Recall ${settings().recall ? 'on' : 'off'}</b>`;
-    const r = lastRecall;
+    const r = recallState.last;
     if (!r) return `<div>${head}: no reply generated since the page loaded.</div>`;
     const when = new Date(r.at).toLocaleTimeString();
     if (!r.ok) return `<div>${head}: last reply (${esc(when)}) <span class="canonkeeper-error">failed, nothing added: ${esc(r.error)}</span></div>`;
-    const what = r.picks.length ? r.picks.map((p) => `<span class="canonkeeper-recalled" data-uid="${esc(p.uid)}">${esc(p.title)}</span> <small>(~${esc(p.tokens)} tokens, last named at ${esc(p.last)})</small>`).join(', ') : 'nothing to add';
-    return `<div>${head}: last reply (${esc(when)}), scene ${esc(r.scene?.join('–') ?? '?')}: ${what}</div>`;
+    const what = r.picks.length ? `added ${r.picks.map((p) => `<span class="canonkeeper-recalled" data-uid="${esc(p.uid)}">${esc(p.title)}</span> <small>(~${esc(p.tokens)} tokens, last named at ${esc(p.last)})</small>`).join(', ')}` : 'nothing to add';
+    return `<div>${head}: last reply (${esc(when)}), scene ${esc(r.scene?.join('–') ?? '?')}: ${what}${r.inPrompt ? ` <small>(${esc(r.inPrompt)} entries of the book were already in World Info)</small>` : ''}</div>`;
 }
 
 /** The clips made on this chat, newest first. */
@@ -696,10 +677,12 @@ jQuery(async () => {
     for (const event of ['GENERATION_ENDED', 'GENERATION_STOPPED']) {
         c.eventSource.on(c.eventTypes[event], () => {
             generating = false;
+            recallState.end();
             scheduleLive();
-            if (lastRecall) renderStatus();
+            if (recallState.last) renderStatus();
         });
     }
+    c.eventSource.on(c.eventTypes.WORLD_INFO_ACTIVATED, (entries) => recallState.activated(entries));
     for (const event of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED']) {
         c.eventSource.on(c.eventTypes[event], () => scheduleLive());
     }

@@ -42,8 +42,9 @@
 //       books; I1 and C7 then score the books together)
 //   X15 recall only adds to the roleplay prompt, and never when it fails:
 //       with recall broken the prompt is the one recall off gives, and with
-//       it working the prompt is that one plus the picked entries, within
-//       the entry count and token budget (opt-in: for an extras run)
+//       it working the prompt is that one plus one message holding the picked
+//       entries, none already in it, within the entry count and token budget
+//       (opt-in: for an extras run)
 //   X16 a clip that fails writes nothing and leaves the prompt as it was; one
 //       that works adds one entry, changes no other, and /canon then makes no
 //       write and holds it (opt-in: for an extras run)
@@ -503,39 +504,33 @@ const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /** The prompt as one string, the way the roleplay model reads it. */
 const promptText = (messages) => (messages ?? []).map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n');
 
-/** The prompt with each of `contents` taken out once, with the line break SillyTavern joins entries with. */
-function without(text, contents) {
-    let out = text;
-    for (const c of contents) {
-        const at = out.indexOf(c);
-        if (at < 0) return null;
-        const end = at + c.length;
-        if (out[end] === '\n') out = out.slice(0, at) + out.slice(end + 1);
-        else if (out[at - 1] === '\n') out = out.slice(0, at - 1) + out.slice(end);
-        else out = out.slice(0, at) + out.slice(end);
+/** `on` with one message taken out is `off`: that message, or null. */
+function oneAdded(off, on) {
+    if (!Array.isArray(off) || !Array.isArray(on) || on.length !== off.length + 1) return null;
+    for (let i = 0; i < on.length; i++) {
+        if (sameJson([...on.slice(0, i), ...on.slice(i + 1)], off)) return on[i];
     }
-    return out;
+    return null;
 }
 
 export function checkX15Recall(x) {
-    const name = 'recall adds entries within budget, and nothing when it fails';
+    const name = 'recall adds one block within budget, and nothing when it fails';
     const r = x?.recall;
     if (!r?.off || !r.on || !r.broken?.length) return result('X15', name, false, { reason: 'no recall prompts: nothing to check' });
     const problems = [];
     if (!sameJson(r.off, r.off2)) problems.push('two generations with recall off gave different prompts: the comparison means nothing');
     for (const b of r.broken) if (!sameJson(b.prompt, r.off)) problems.push(`recall broken by ${b.what}: the prompt differs from recall off`);
-    if (!r.picks?.length) problems.push('recall on picked nothing: the working case shows nothing');
-    if ((r.picks?.length ?? 0) > r.maxEntries) problems.push(`${r.picks.length} entries picked, more than ${r.maxEntries}`);
-    const tokens = (r.picks ?? []).reduce((n, p) => n + Math.ceil(p.content.length / 3), 0);
+    const picks = r.picks ?? [];
+    if (!picks.length) problems.push('recall on picked nothing: the working case shows nothing');
+    if (picks.length > r.maxEntries) problems.push(`${picks.length} entries picked, more than ${r.maxEntries}`);
+    const tokens = picks.reduce((n, p) => n + Math.ceil(p.content.length / 3), 0);
     if (tokens > r.budgetTokens) problems.push(`picked entries are ~${tokens} tokens, over the ${r.budgetTokens} budget`);
+    const added = oneAdded(r.off, r.on);
+    if (!added) problems.push('with recall on, the prompt is not the recall-off prompt plus one message');
+    else if (added.content !== picks.map((p) => p.content.trim()).join('\n')) problems.push('the added message is not the picked entries');
     const off = promptText(r.off);
-    const on = promptText(r.on);
-    for (const p of r.picks ?? []) {
-        if (!on.includes(p.content)) problems.push(`'${p.title}' was picked but isn't in the prompt`);
-        if (off.includes(p.content)) problems.push(`'${p.title}' is in the prompt with recall off too: recall added nothing`);
-    }
-    if (r.picks?.length && without(on, r.picks.map((p) => p.content)) !== off) problems.push('with recall on, the prompt is not the recall-off prompt plus the picked entries');
-    return result('X15', name, !problems.length, { picks: (r.picks ?? []).map((p) => p.title), tokens, broken: r.broken.map((b) => b.what), problems });
+    for (const p of picks) if (off.includes(p.content)) problems.push(`'${p.title}' is in the prompt with recall off too: recall added it twice`);
+    return result('X15', name, !problems.length, { picks: picks.map((p) => p.title), tokens, broken: r.broken.map((b) => b.what), problems });
 }
 
 export function checkX16Clip(x) {

@@ -16,14 +16,15 @@
 //   - An entry is about the scene when one of its keys fires there, or when a
 //     fact it carries cites a message there.
 //   - An entry whose keys fire in the scan window is skipped: SillyTavern
-//     activates it anyway. So is a disabled or constant entry, and one with
-//     no keys.
+//     activates it anyway. So is one SillyTavern says it activated (`exclude`:
+//     an entry another entry's text names comes in by recursion), a disabled
+//     or constant entry, and one with no keys.
 //   - The most recently mentioned go first, then the most mentioned. An entry
 //     too big for what's left of the budget is passed over for a smaller one.
 //
-// Recall only nominates entries. SillyTavern still applies its own rules to
-// them (cooldown, delay, its World Info budget), so it adds entries to the
-// prompt and never removes one.
+// The picks go into the prompt in a block of their own, beside World Info,
+// never into it: World Info's own scan, its budget and its order stay exactly
+// as they are without recall (adapter/run.js recallSession).
 
 import { estimateTokens } from './budget.js';
 import { entryKeyRegex } from './match.js';
@@ -55,12 +56,13 @@ function cited(entry, [from, to]) {
 
 /**
  * The entries to add this turn. `entries` are the chat book's, `messages`
- * the chat (core messages: { id, text }), `starts` the scene starts known.
+ * the chat (core messages: { id, text }), `starts` the scene starts known,
+ * `exclude` the uids already in the prompt.
  * Returns { scene, picks, considered }: `picks` are { uid, title, tokens,
  * last, mentions }, in the order chosen, and their tokens add up to at most
  * `budgetTokens`.
  */
-export function recall({ entries, messages, starts = [], maxEntries = DEFAULT_RECALL.maxEntries, budgetTokens = DEFAULT_RECALL.budgetTokens, scanDepth = DEFAULT_RECALL.scanDepth }) {
+export function recall({ entries, messages, starts = [], exclude = new Set(), maxEntries = DEFAULT_RECALL.maxEntries, budgetTokens = DEFAULT_RECALL.budgetTokens, scanDepth = DEFAULT_RECALL.scanDepth }) {
     if (!messages.length) return { scene: null, picks: [], considered: 0 };
     const scene = openScene(starts, messages.length);
     const inScene = messages.slice(scene[0], scene[1] + 1);
@@ -68,7 +70,7 @@ export function recall({ entries, messages, starts = [], maxEntries = DEFAULT_RE
 
     const candidates = [];
     for (const e of entries) {
-        if (!e || e.disable || e.constant || !e.key?.length || !String(e.content ?? '').trim()) continue;
+        if (!e || e.disable || e.constant || !e.key?.length || !String(e.content ?? '').trim() || exclude.has(e.uid)) continue;
         if (keysFireOn(e, scanned).length) continue;
         const mentions = [...new Set([...keysFireOn(e, inScene), ...cited(e, scene)])];
         if (!mentions.length) continue;
