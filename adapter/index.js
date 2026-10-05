@@ -237,10 +237,12 @@ async function canonClip(at, text) {
     const c = ctx();
     const s = settings();
     const profile = profileOf(s.profileId);
+    // A typed /canon-clip runs inside SillyTavern's generation (it emits
+    // GENERATION_STARTED before running commands), so a reply in progress
+    // isn't a reason to refuse: the clip only writes the book.
     const refuse = running ? 'Canonkeeper is already running'
-        : generating ? 'Wait for the reply to finish'
-            : !c.chatId ? 'Open a chat first'
-                : !profile ? 'Pick a connection profile in Extensions → Canonkeeper first' : null;
+        : !c.chatId ? 'Open a chat first'
+            : !profile ? 'Pick a connection profile in Extensions → Canonkeeper first' : null;
     if (refuse) {
         toastr.warning(refuse, 'Canonkeeper');
         throw new Error(refuse);

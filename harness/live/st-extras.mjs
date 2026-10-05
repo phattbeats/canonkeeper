@@ -350,6 +350,16 @@ async function main() {
         return $('#openai_max_context').val();
     });
     log(`[ui] roleplay context window set to ${context} tokens`);
+    // With World Info's recursive scan on, an entry's text pulls in every
+    // entry it names, and on this book that already holds everything the
+    // scene names: recall rightly adds nothing. So recall is compared with
+    // recursion off, a setting users choose, and once more with it on.
+    const recursive = await page.evaluate(() => {
+        const was = $('#world_info_recursive').prop('checked');
+        $('#world_info_recursive').prop('checked', false).trigger('input').trigger('change');
+        return { was, now: $('#world_info_recursive').prop('checked') };
+    });
+    log(`[ui] World Info recursive scan: was ${recursive.was ? 'on' : 'off'}, now ${recursive.now ? 'on' : 'off'}`);
 
     // 4. Recall: off twice, on, broken.
     const x = { recall: { ...RECALL, broken: [] }, clip: {} };
@@ -384,9 +394,24 @@ async function main() {
     await page.evaluate(() => {
         delete SillyTavern.getContext().chatMetadata.canonkeeper.live;
     });
+    // Recall on with recursion on: an observation, not gated.
+    await page.evaluate(() => $('#world_info_recursive').prop('checked', true).trigger('input').trigger('change'));
+    log('[ui] World Info recursive scan back on');
+    const recOff = await (async () => {
+        await page.locator('#canonkeeper_recall').uncheck();
+        await sleep(800);
+        return capture(page, 'recursive-recall-off');
+    })();
+    await page.locator('#canonkeeper_recall').check();
+    await sleep(800);
+    const recOn = await capture(page, 'recursive-recall-on');
+    await sleep(1500);
+    x.recall.recursive = { off: recOff, on: recOn, picks: await page.$$eval('#canonkeeper_status .canonkeeper-recalled', (els) => els.map((e) => Number(e.dataset.uid))) };
+    log(`[check] recursion on: recall ${same(recOff, recOn) ? 'added nothing (World Info already held what the scene names)' : `added ${recOn.length - recOff.length} message(s)`}`);
+    await page.evaluate(() => $('#world_info_recursive').prop('checked', false).trigger('input').trigger('change'));
     await page.locator('#canonkeeper_recall').uncheck();
     await sleep(1000);
-    log('[ui] Recall unticked; state store restored');
+    log('[ui] Recall unticked; recursion off again; state store restored');
 
     // 5. A clip that fails: the writer is the roleplay endpoint, which
     // answers in prose, not JSON.
