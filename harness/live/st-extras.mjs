@@ -432,6 +432,7 @@ async function main() {
     // 6. A clip that works: highlight a sentence of message 48 and press the
     // scissors in its message actions.
     await pickWriter(page, WRITER);
+    await page.evaluate(() => toastr.clear());
     await page.evaluate(() => document.getElementById('extensions-settings-button').querySelector('.drawer-toggle').click());
     await sleep(800);
     x.clip.working = { bookBefore: await bookText(bookName) };
