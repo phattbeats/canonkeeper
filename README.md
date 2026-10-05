@@ -4,7 +4,7 @@ Canonkeeper turns a SillyTavern roleplay chat into a correct, self-maintaining W
 
 It's a clean-room build. It's written from its own spec and SillyTavern's public APIs and lorebook format, and not from any other extension's code.
 
-**Status: build step 6 (the audit).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). With live mode on, the book keeps up while you play: a cheap model notices when a scene ends, and the scene that ended goes through step 2's update (step 5). `/canon-audit` checks the book: plain code finds what's technically wrong, a model checks every claim against the messages it cites, and every fix waits for you to accept it (step 6). The command line still works for offline runs.
+**Status: build step 7 (the optional extras).** The core turns a transcript file into a complete lorebook in one model call (step 1), then keeps it up to date as the chat changes, re-reading only the scenes that changed (step 2). The repo is also a SillyTavern extension, so `/canon` runs the same core inside SillyTavern (step 3). A story too long for the model's window is read in parts, and the book says so (step 4). With live mode on, the book keeps up while you play: a cheap model notices when a scene ends, and the scene that ended goes through step 2's update (step 5). `/canon-audit` checks the book: plain code finds what's technically wrong, a model checks every claim against the messages it cites, and every fix waits for you to accept it (step 6). Two optional extras come last: recall adds a few more entries the open scene is about to each reply, and a passage you highlight becomes an entry (step 7). Neither can change the story when it fails. The command line still works for offline runs.
 
 ## The one-shot core (`src/`)
 
@@ -195,6 +195,66 @@ BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harne
 
 Before step 6, `/canon` silently added a deleted entry back. The re-run in `build:audit` now makes zero writes, and A12 checks that the entry stays deleted.
 
+## The extras: recall and clips (step 7)
+
+Both extras are optional, and both keep one rule: when an extra fails, the prompt the roleplay model gets is exactly the prompt it would get without the extra.
+
+### Recall (`src/recall.js`)
+
+SillyTavern activates an entry when one of its keys is in the last few messages (the scan depth, 2 by default). In a long scene, that drops what the story is still in the middle of. Recall adds, each turn, a few of the entries the open scene is about that World Info left out.
+
+- **The pick is plain code, with no model call.** The open scene runs from the last scene start Canonkeeper knows (the ledger's, or live mode's) to the newest message, at most 40 messages. An entry is about the scene when one of its keys fires there, or a fact it carries cites a message there. Entries mentioned most recently go first, then the most mentioned. At most **At most (entries)** are picked (3 by default), within **Within (tokens)** (600). An entry too big for what's left of the budget is passed over for a smaller one.
+- **It never repeats World Info.** A generate interceptor picks before SillyTavern scans World Info. When the scan reports what it activated (`WORLD_INFO_ACTIVATED`), recall picks again without those, so an entry another entry's text brought in by recursion isn't added twice.
+- **It has its own block.** The picks go into an extension prompt of their own (`canonkeeper_recall`, a system message), one entry per line. World Info never scans that block, so World Info's own entries, order and budget are exactly what they are with recall off. Like any World Info, the block takes room from the chat history when the context is full, so the budget caps it.
+- **Anything that goes wrong leaves the block empty.** The block is cleared before each pick and after each reply. A throw, an unreadable state store, a book that doesn't load, or a pick slower than 1 second leaves it empty. Then the prompt is the one recall off gives. Recall never aborts a generation and writes nothing.
+
+Turn it on with **Recall** under Extensions → Canonkeeper (it's off by default, because it adds to the roleplay prompt). The status view shows what the last reply got, and how many of the book's entries were already in World Info.
+
+With World Info's recursive scan on, a Canonkeeper book often needs no help. Its entries name each other, so recursion already pulls in what the scene names, and recall adds nothing. Recall earns its place when recursion is off, or when an entry's text doesn't name the entity the scene is still about.
+
+### Clips (`src/clip.js`, `/canon-clip`)
+
+Highlight a passage in a message, open the message's actions and press the scissors. Or type `/canon-clip at=<message> <passage>`; with no passage, the whole message is clipped. One model call (the writer's profile) reads the passage, with the eight messages before it for context, and writes three fields: a title, a blurb and keys. Code writes the entry:
+
+- **The keys follow the book's rules.** A key the chat never uses is dropped, and so is a pronoun or a key that fires on more than 80% of the messages. A key any enabled entry already holds, in this book or another active one, is dropped too, and so is a bare word of one of their phrases ("Captain" against "Captain Quill"). So a clip never takes a key from an entry, and what fires today still fires.
+- **The entry is titled `Clip: <title>`.** Its content is the blurb, then the passage in quotes. Its blurb is its one fact, citing the clipped message, so the audit checks it like any claim. It doesn't cascade.
+- **It's the user's.** `/canon` holds a clip like a pinned entry: it never rewrites or removes it, and a clip's keys win every contest. That holds on a full rebuild too.
+- **A failed clip writes nothing.** A selection that isn't in its message, a passage over 3,000 characters, a reply that isn't strict JSON after one retry, or no usable key left: the clip is refused and the book is untouched. The status view lists every clip, with the keys it dropped and why, or the error.
+
+### The live extras run (`harness/live/st-extras.mjs`)
+
+This drives a fresh SillyTavern through a real browser. The roleplay model is an OpenAI-compatible endpoint in the driver that keeps the body of every request it gets. The fixture chat, cut after message 49 (a user line), is opened, and `/canon` builds its book with claude-sonnet-5. Then each reply is generated with `/trigger`, its request kept, and the reply deleted, so every generation sees the same chat:
+
+| Prompt | What changed |
+|---|---|
+| recall off, twice | nothing: the baseline, and proof that two prompts compare equal |
+| recall on | **Recall** ticked in the panel |
+| recall broken | the live state store's scene starts made unreadable in the page |
+| after a failed clip | `/canon-clip` with the writer pointed at the roleplay endpoint, which answers in prose |
+| with a clip | a sentence of message 48 highlighted on the page and clipped with the scissors |
+
+Then `/canon` runs again. World Info's recursive scan is off for the comparison: with it on, this book's entries pull each other in and recall rightly adds nothing. The driver also records one pair with recursion on. It writes `extras.log`, screenshots, every prompt and `extras.json`, then gates them with `--extras`.
+
+On 2026-10-05 it ran against SillyTavern 1.19.0 at commit 089417c:
+
+- **Recall off:** two generations sent byte-identical requests.
+- **Recall on:** the request was the recall-off request plus one message: The Saltwind Chart, the Lamplighters' Guild and the Lighthouse Bargain (~164 tokens of 600). All three were named in the scene (40–49), but not in the last two messages. World Info already held 4 of the book's entries.
+- **Recall broken:** the request was byte-identical to recall off. The status view said "failed, nothing added".
+- **Recursion on:** recall added nothing, and the request was byte-identical to recall off with recursion on.
+- **The failed clip:** "no JSON object in the reply" after one retry. The lorebook file was byte-identical, and so was the next request.
+- **The clip:** "Clip: Saul's Sealed Letter", keyed `letter`, `green wax` and `lantern sigil`. One entry was added and no other entry changed. A key was in the last two messages, so the next request carried the clip.
+- **`/canon` after the clip:** zero writes, the clip held as `clip`.
+- **The gate:** X15 and X16 green.
+
+Two more runs at f8a1e1d were green too, so 3 of 3. Each `/canon` wrote its own book, so recall's picks varied: the Lighthouse Bargain, Kestrel Lighthouse and Saltgate in one run, and the Saltwind Chart, the Lamplighters' Guild and the Lighthouse Bargain in the other (~143 and ~223 tokens). Each time, the request was the recall-off request plus one message, and the broken and failed-clip requests were byte-identical to it. These changes also touched `src/plan.js` and `src/update.js` (a clip is held) and only exported two helpers from `src/compile.js`. `live-runs.js` with claude-sonnet-5 then scored 9 of 10 green, which passes. The red run split the escape at 79 (C8), a known model miss, with no I-check red.
+
+The first version forced recall's picks into World Info itself, with SillyTavern's `WORLDINFO_FORCE_ACTIVATE`. The live run showed what that does: the picks were entries recursion was already pulling in, so the request had the same entries in a different order. Forcing entries also competes with World Info's own budget. That is why recall now has its own block and picks again after the scan.
+
+```bash
+ST_DIR=/path/to/SillyTavern ST_PAGE=http://<st-host>:8000/ ST_API=http://127.0.0.1:8000 \
+BROWSER_WS=ws://<browserless>:3000 PROXY_URL=http://<claude-proxy>/v1 node harness/live/st-extras.mjs
+```
+
 ## Re-runs (`src/update.js`, `src/plan.js`, `src/align.js`)
 
 The ledger (`ledger.json`, versioned, one per chat) is the state, and the lorebook is the output. It holds:
@@ -213,7 +273,8 @@ The ledger (`ledger.json`, versioned, one per chat) is the state, and the lorebo
 4. **Diffs it against the book** into a plan of `add`, `update` and `remove` writes, and applies only that plan. Three kinds of entry are held exactly as they are, and their keys win every contest:
    - a pinned entry;
    - an entry edited by hand (its hash no longer matches the ledger);
-   - an entry Canonkeeper didn't write.
+   - an entry Canonkeeper didn't write;
+   - a clip.
 
    An entry Canonkeeper wrote that has been deleted from the book stays deleted. Its entity stays in the canon, under the ledger's `deleted`, but gets no entry, and its keys are free. Only accepting the audit's restore brings it back.
 
@@ -278,6 +339,7 @@ node harness/gate.js --run <run-dir> --chunked   # a run on a window too small f
 node harness/gate.js --run <run-dir> --live      # a live session (harness/live-sim.js, st-session.mjs)
 node harness/gate.js --run <audit-dir> --audit   # an audit run (npm run build:audit, st-audit.mjs)
 node harness/gate.js --run <run-dir> --books     # a run with other active lorebooks (st-books.mjs)
+node harness/gate.js --run <extras-dir> --extras # the recall and clip run (st-extras.mjs)
 npm run build:audit                              # build, audit, plant, audit again, re-run, then gate --audit
 node harness/live-runs.js --model <id> --n 10     # n live one-shot builds, each gated, then a tally (below)
 ```
@@ -287,6 +349,8 @@ With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's ba
 With `--audit`, the run directory is an audit run (below), and the gate runs only A12 and A13: step 6's bar.
 
 With `--books`, the chat had other active lorebooks. The gate runs B14, and I1 and C7 score the chat's book and the other books together, so an entity another book covers counts as found, and only once.
+
+With `--extras`, the run directory is an extras run, and the gate runs only X15 and X16: step 7's bar.
 
 With `--live`, the gate also runs L11 on the run's `live.json`. Step 5's bar for a live session is I1–I6, C8 on the scene starts the detector found, and L11. The live book covers only the scenes that have ended, so C7 is shown as `INFO`.
 
@@ -313,6 +377,8 @@ The checks test properties and coverage, never wording. A builder that writes be
 | A12 | With `--audit` only. The audit of the planted book caught the collision on both entries, the deleted entry and every planted false fact (judged anything but supported). It verified at least one claim and changed nothing in the book, and a re-run left the deleted entry deleted. The plant itself is checked first: a missing plant is a fixture error |
 | A13 | With `--audit` only. The audit of the book as built has no technical finding, verified at least one claim, and flagged at most 15% of them |
 | B14 | With `--books` only. Every other book's file is byte-identical, as SillyTavern's HTTP API returns it, after each run. No entry in the chat's book is the same entity as an enabled entry in another book: neither one's title is the other's title or key, and they share no key |
+| X15 | With `--extras` only. Two recall-off prompts are identical, and every recall-broken prompt is identical to them. The recall-on prompt is the recall-off prompt plus exactly one message, and that message is the picked entries, none already in the prompt, within the entry count and token budget. A recall that picks nothing is red: it proves nothing |
+| X16 | With `--extras` only. After the failed clip, the lorebook file is byte-identical, an error is recorded and the next prompt is the baseline. The working clip adds exactly one entry with keys and a clip record, changes no other entry and claims no key another entry holds. `/canon` afterwards makes no write, leaves the file as it was and holds the clip. If a clip key is in the last messages, the clip is in the prompt |
 | K10 | With `--chunked` only. The run's `ledger.json` says it was built in parts: two or more parts that read every message exactly once, in order, and a reconciliation record. A one-shot run gated as chunked is red |
 
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
@@ -383,6 +449,8 @@ A builder's output for a transcript is a directory containing three files:
 - `scenes.json`: `{ "boundaries": [id, ...] }`, the ids of messages that start a new scene. Message 0 is excluded.
 - `others.json` (for `--books`): `{ "books": [{ "name", "via", "before", "after": [...] }] }`. `before` is each other book's file as text before the first run, and `after` holds the same file after each run.
 - `edits/<name>/book.json` (for `--edits`): `book.json` brought up to date with `fixtures/story/edits/<name>/transcript.jsonl`.
+
+An extras run (`--extras`) is a directory with `extras.json`: the prompts the roleplay endpoint received (recall off twice, on, broken, after the failed clip, with the clip), the picked entries, and the lorebook file as text before and after each clip and after the `/canon` that followed.
 
 An audit run (`--audit`) is a directory with `clean/audit.json`, the audit of the book as built, and `planted/`. That holds `planted.json` (the uids planted), `planted-book.json` (the book as planted, before the audit), `book.json` (the book after the audit), `audit.json` and `rerun.json` (the book after a re-run).
 
