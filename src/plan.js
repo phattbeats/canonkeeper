@@ -29,14 +29,15 @@ export const entryHash = (entry) => hashOf(owned(entry));
 
 /**
  * The entries a run must keep exactly as they are, each with the reason:
- * pinned by a human, edited by hand since Canonkeeper wrote it, or never
- * written by Canonkeeper at all.
+ * pinned by a human, clipped by one (clip.js), edited by hand since
+ * Canonkeeper wrote it, or never written by Canonkeeper at all.
  */
 export function heldEntries(book, written = {}) {
     const held = [];
     for (const e of Object.values(book.entries)) {
         let reason = null;
         if (e.canonkeeper?.pinned) reason = 'pinned';
+        else if (e.canonkeeper?.clip) reason = 'clip';
         else if (!(String(e.uid) in written)) reason = 'not written by Canonkeeper';
         else if (entryHash(e) !== written[String(e.uid)]) reason = 'edited by hand';
         if (reason) held.push({ entry: e, reason });

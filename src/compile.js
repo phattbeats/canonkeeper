@@ -16,7 +16,7 @@ const fold = (s) => s.toLowerCase();
  * A pronoun points at whoever the sentence is about, never at one entity: a
  * first-person narrator's "I" is every speaker's "I".
  */
-const PRONOUNS = new Set(['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their']);
+export const PRONOUNS = new Set(['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their']);
 
 /**
  * A capitalised one-word key needs case-sensitive matching when the story
@@ -24,7 +24,7 @@ const PRONOUNS = new Set(['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 
  * entity (Wren the runner vs. a wren on the windowsill). Phrases don't count:
  * "the prophecy" mid-sentence is still The Prophecy.
  */
-function needsCase(key, messages) {
+export function needsCase(key, messages) {
     const lower = key.toLowerCase();
     return !/\s/.test(key) && lower !== key && spellings(key, messages).includes(lower);
 }

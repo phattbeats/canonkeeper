@@ -14,6 +14,8 @@ import { describe } from '../src/plan.js';
 import { hashOf, fingerprint } from '../src/fingerprint.js';
 import { seed, rewind, detect, updateTarget, logCycle, isLive, DEFAULT_CADENCE } from '../src/live.js';
 import { audit, accept, dismiss, openFindings } from '../src/audit.js';
+import { clip } from '../src/clip.js';
+import { recall, DEFAULT_RECALL } from '../src/recall.js';
 
 export const STATE_KEY = 'canonkeeper';
 export const STATE_VERSION = 1;
@@ -32,6 +34,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     // the detector's, else the writer's. A cheap model does well here too.
     auditVerify: true,
     auditProfileId: '',
+    // Recall: off until turned on, because it adds to the roleplay prompt.
+    recall: false,
+    recallEntries: DEFAULT_RECALL.maxEntries,
+    recallTokens: DEFAULT_RECALL.budgetTokens,
 });
 
 /** The open chat as the core's messages: the same shape parseTranscript gives. */
@@ -112,13 +118,8 @@ export async function otherBooks(st, bookName, log = () => {}) {
     return { books, foreign };
 }
 
-/**
- * Brings the chat's lorebook up to date with `messages` (the whole chat for
- * /canon, the finished scenes for live mode). Binds a book first if the chat
- * has none. Writes only the plan, and only if the same chat is still open and
- * the book didn't change while the model was working; otherwise throws.
- */
-async function syncBook(st, { messages, ledger, starts, log }) {
+/** The chat's lorebook: the one bound to it, or a new one, created and bound. */
+async function bindBook(st, log) {
     let bookName = st.metadata.world_info;
     if (!bookName) {
         bookName = bookNameFor(st.chatId);
@@ -131,6 +132,17 @@ async function syncBook(st, { messages, ledger, starts, log }) {
         st.metadata.world_info = bookName;
         log(`bound lorebook '${bookName}' to the chat`);
     }
+    return bookName;
+}
+
+/**
+ * Brings the chat's lorebook up to date with `messages` (the whole chat for
+ * /canon, the finished scenes for live mode). Binds a book first if the chat
+ * has none. Writes only the plan, and only if the same chat is still open and
+ * the book didn't change while the model was working; otherwise throws.
+ */
+async function syncBook(st, { messages, ledger, starts, log }) {
+    const bookName = await bindBook(st, log);
     const book = (await st.loadBook(bookName)) ?? { entries: {} };
     book.entries ??= {};
     const before = hashOf(book.entries);
@@ -402,4 +414,83 @@ export async function dismissFinding(st, id) {
     const next = dismiss(state.audit, id);
     st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, audit: { ...next, summary: auditSummary(next, next.book) } };
     await st.saveMetadata();
+}
+
+// --- Clips --------------------------------------------------------------------
+
+/** Clips kept in the record, newest last. */
+const CLIP_RECORDS = 50;
+
+/**
+ * Clips the passage `text` of message `at` (src/clip.js): one model call,
+ * then one new entry in the chat's lorebook, bound first if the chat has
+ * none. `st` is as for runCanon. The record goes to
+ * `chat_metadata.canonkeeper.clips`. Throws, with nothing written to the
+ * book, if the clip fails, the chat is switched or the book changes under it.
+ */
+export async function runClip(st, { at, text }) {
+    const started = Date.now();
+    const { lines, log } = runLog(st);
+    const state = st.metadata[STATE_KEY] ?? {};
+    const keep = (record) => {
+        const clips = [...(state.clips ?? []), { at: new Date(started).toISOString(), ms: Date.now() - started, message: at, ...record, log: lines }].slice(-CLIP_RECORDS);
+        st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, clips };
+    };
+    try {
+        const messages = toMessages(st.chat);
+        const bookName = await bindBook(st, log);
+        const book = (await st.loadBook(bookName)) ?? { entries: {} };
+        book.entries ??= {};
+        const before = hashOf(book.entries);
+        const { foreign } = await otherBooks(st, bookName, log);
+        const ledger = state.book === bookName ? state.ledger ?? null : null;
+        log(`clipping ${String(text ?? '').trim() ? `${String(text).trim().length} characters` : 'the whole message'} of message ${at} into '${bookName}'`);
+        const { entry, dropped } = await clip({ book, ledger, foreign, messages, at, text, generate: st.generate });
+        for (const d of dropped) log(`key '${d.key}' dropped: ${d.reason}`);
+
+        if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the clip; nothing was written');
+        const now = (await st.loadBook(bookName)) ?? { entries: {} };
+        if (hashOf(now.entries ?? {}) !== before) throw new Error('the lorebook changed during the clip; nothing was written. Clip again');
+        await st.saveBook(bookName, { ...book, entries: { ...book.entries, [String(entry.uid)]: entry } });
+        const summary = `Canonkeeper: clipped message ${at} into '${bookName}' as '${entry.comment}', keys ${entry.key.join(', ')}`;
+        log(summary);
+        keep({ ok: true, book: bookName, uid: entry.uid, title: entry.comment, keys: entry.key, dropped, summary });
+        await st.saveMetadata();
+        return { summary, entry, bookName };
+    } catch (err) {
+        log(`clip failed: ${err.message}`);
+        if (st.currentChatId() !== st.chatId) throw err;
+        keep({ ok: false, error: err.message });
+        await st.saveMetadata();
+        throw err;
+    }
+}
+
+// --- Recall -------------------------------------------------------------------
+
+/**
+ * The entries recall adds this turn (src/recall.js), from the chat's bound
+ * lorebook and the scene starts Canonkeeper knows for it. Each comes back as
+ * the full entry with `world` set to its book, which is what SillyTavern's
+ * WORLDINFO_FORCE_ACTIVATE takes. Reads only; writes nothing anywhere.
+ * `settings` is { recallEntries, recallTokens }, `scanDepth` SillyTavern's.
+ */
+export async function recallFor({ chat, metadata, loadBook, settings, scanDepth }) {
+    const bookName = metadata?.world_info;
+    if (!bookName) return { book: null, picks: [], entries: [] };
+    const book = (await loadBook(bookName)) ?? { entries: {} };
+    const state = metadata[STATE_KEY] ?? {};
+    const mine = state.book === bookName;
+    const starts = mine ? [...(state.ledger?.scenes ?? []), ...(state.live?.starts ?? [])] : [];
+    const entries = Object.values(book.entries ?? {});
+    const out = recall({
+        entries,
+        messages: toMessages(chat),
+        starts,
+        maxEntries: Number(settings.recallEntries) || DEFAULT_RECALL.maxEntries,
+        budgetTokens: Number(settings.recallTokens) || DEFAULT_RECALL.budgetTokens,
+        scanDepth: Number(scanDepth) || DEFAULT_RECALL.scanDepth,
+    });
+    const byUid = new Map(entries.map((e) => [e.uid, e]));
+    return { book: bookName, ...out, entries: out.picks.map((p) => ({ ...structuredClone(byUid.get(p.uid)), world: bookName })) };
 }

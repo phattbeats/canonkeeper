@@ -185,12 +185,12 @@ function merge(canon, found, previous, fresh, review, renamed) {
 
 /**
  * No usable ledger (none, or an older version): one full build, with every
- * pinned entry and every entry Canonkeeper didn't write held, and entries
+ * pinned entry, every clip and every entry Canonkeeper didn't write held, and entries
  * kept on their uids by title. Then the same diff as any other run.
  */
 async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign }) {
     const entries = Object.values(book.entries);
-    const held = entries.filter((e) => e.canonkeeper?.pinned || !e.canonkeeper);
+    const held = entries.filter((e) => e.canonkeeper?.pinned || e.canonkeeper?.clip || !e.canonkeeper);
     const uids = new Map(entries.map((e) => [fold(e.comment ?? ''), e.uid]));
     const nextUid = Math.max(-1, ...entries.map((e) => e.uid)) + 1;
     let calls = 0;
@@ -202,7 +202,7 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
         scenes: fresh.scenes,
         ledger: fresh.ledger,
         plan: ops,
-        held: held.map((e) => ({ uid: e.uid, title: e.comment, reason: e.canonkeeper ? 'pinned' : 'not written by Canonkeeper' })),
+        held: held.map((e) => ({ uid: e.uid, title: e.comment, reason: !e.canonkeeper ? 'not written by Canonkeeper' : e.canonkeeper.pinned ? 'pinned' : 'clip' })),
         calls,
         wrote: ops.length > 0,
     };

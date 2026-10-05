@@ -165,3 +165,14 @@ export function loadOthers(dir) {
         return { name: b.name, via: b.via ?? null, before: b.before, after: b.after, entries };
     });
 }
+
+/**
+ * An extras run (`--extras`, harness/live/st-extras.mjs): `<dir>/extras.json`,
+ * the prompts the roleplay model got with recall off, on and broken, and the
+ * lorebook files around a failed and a working clip.
+ */
+export function loadExtras(dir) {
+    const x = readJson(join(dir, 'extras.json'));
+    if (!x.recall || !x.clip) throw new FixtureError(`${dir}/extras.json needs recall and clip`);
+    return x;
+}

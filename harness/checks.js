@@ -40,6 +40,13 @@
 //       both the chat's book and another (same title, a title the other
 //       holds as a key, or a shared key) (opt-in: for a run with other
 //       books; I1 and C7 then score the books together)
+//   X15 recall only adds to the roleplay prompt, and never when it fails:
+//       with recall broken the prompt is the one recall off gives, and with
+//       it working the prompt is that one plus the picked entries, within
+//       the entry count and token budget (opt-in: for an extras run)
+//   X16 a clip that fails writes nothing and leaves the prompt as it was; one
+//       that works adds one entry, changes no other, and /canon then makes no
+//       write and holds it (opt-in: for an extras run)
 
 import { entryFires, keyFires, DEFAULTS } from './activation.js';
 
@@ -487,4 +494,73 @@ export function checkB14OtherBooks(book, others) {
         }
     }
     return result('B14', name, !written.length && !duplicates.length, { books: others.map((b) => b.name), written, duplicates });
+}
+
+// ── X15 / X16 ────────────────────────────────────────────────────────────────
+
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** The prompt as one string, the way the roleplay model reads it. */
+const promptText = (messages) => (messages ?? []).map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n');
+
+/** The prompt with each of `contents` taken out once, with the line break SillyTavern joins entries with. */
+function without(text, contents) {
+    let out = text;
+    for (const c of contents) {
+        const at = out.indexOf(c);
+        if (at < 0) return null;
+        const end = at + c.length;
+        if (out[end] === '\n') out = out.slice(0, at) + out.slice(end + 1);
+        else if (out[at - 1] === '\n') out = out.slice(0, at - 1) + out.slice(end);
+        else out = out.slice(0, at) + out.slice(end);
+    }
+    return out;
+}
+
+export function checkX15Recall(x) {
+    const name = 'recall adds entries within budget, and nothing when it fails';
+    const r = x?.recall;
+    if (!r?.off || !r.on || !r.broken?.length) return result('X15', name, false, { reason: 'no recall prompts: nothing to check' });
+    const problems = [];
+    if (!sameJson(r.off, r.off2)) problems.push('two generations with recall off gave different prompts: the comparison means nothing');
+    for (const b of r.broken) if (!sameJson(b.prompt, r.off)) problems.push(`recall broken by ${b.what}: the prompt differs from recall off`);
+    if (!r.picks?.length) problems.push('recall on picked nothing: the working case shows nothing');
+    if ((r.picks?.length ?? 0) > r.maxEntries) problems.push(`${r.picks.length} entries picked, more than ${r.maxEntries}`);
+    const tokens = (r.picks ?? []).reduce((n, p) => n + Math.ceil(p.content.length / 3), 0);
+    if (tokens > r.budgetTokens) problems.push(`picked entries are ~${tokens} tokens, over the ${r.budgetTokens} budget`);
+    const off = promptText(r.off);
+    const on = promptText(r.on);
+    for (const p of r.picks ?? []) {
+        if (!on.includes(p.content)) problems.push(`'${p.title}' was picked but isn't in the prompt`);
+        if (off.includes(p.content)) problems.push(`'${p.title}' is in the prompt with recall off too: recall added nothing`);
+    }
+    if (r.picks?.length && without(on, r.picks.map((p) => p.content)) !== off) problems.push('with recall on, the prompt is not the recall-off prompt plus the picked entries');
+    return result('X15', name, !problems.length, { picks: (r.picks ?? []).map((p) => p.title), tokens, broken: r.broken.map((b) => b.what), problems });
+}
+
+export function checkX16Clip(x) {
+    const name = 'a failed clip changes nothing; a clip adds one held entry';
+    const c = x?.clip;
+    if (!c?.broken || !c.working) return result('X16', name, false, { reason: 'no clip runs: nothing to check' });
+    const problems = [];
+    if (c.broken.bookAfter !== c.broken.bookBefore) problems.push('the failed clip changed the lorebook file');
+    if (!c.broken.error) problems.push('the failed clip recorded no error');
+    if (!sameJson(c.broken.prompt, x.recall?.off)) problems.push('after the failed clip, the prompt differs from before it');
+
+    const before = JSON.parse(c.working.bookBefore).entries;
+    const after = JSON.parse(c.working.bookAfter).entries;
+    const added = Object.keys(after).filter((u) => !(u in before));
+    const changed = Object.keys(before).filter((u) => !sameJson(before[u], after[u]));
+    if (added.length !== 1) problems.push(`the clip added ${added.length} entries, not 1`);
+    if (changed.length) problems.push(`the clip changed or removed entries ${changed.join(', ')}`);
+    const clip = after[added[0]];
+    if (clip && !(clip.key?.length && clip.canonkeeper?.clip)) problems.push('the clip entry has no keys or no clip record');
+    const others = Object.values(after).filter((e) => e !== clip && !e.disable).flatMap((e) => e.key.map(foldKey));
+    for (const k of clip?.key ?? []) if (others.includes(foldKey(k))) problems.push(`the clip claims '${k}', which another entry holds`);
+    if (c.working.canon?.plan?.length) problems.push(`/canon after the clip made ${c.working.canon.plan.length} writes`);
+    if (c.working.bookAfterCanon !== c.working.bookAfter) problems.push('/canon after the clip changed the lorebook file');
+    if (clip && !c.working.canon?.held?.some((h) => h.uid === clip.uid && h.reason === 'clip')) problems.push('/canon did not hold the clip');
+    const fires = clip && c.working.firesInScan;
+    if (fires && !promptText(c.working.prompt).includes(clip.content)) problems.push('the clip\'s key is in the last messages but its entry is not in the prompt');
+    return result('X16', name, !problems.length, { clip: clip ? { uid: clip.uid, title: clip.comment, keys: clip.key } : null, firesInScan: !!fires, error: c.broken.error, problems });
 }

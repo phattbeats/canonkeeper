@@ -5,8 +5,9 @@
     "optional": [],
     "js": "adapter/index.js",
     "css": "adapter/style.css",
+    "generate_interceptor": "canonkeeperRecall",
     "author": "phattbeats",
-    "version": "0.5.0",
+    "version": "0.7.0",
     "homePage": "https://github.com/phattbeats/canonkeeper",
     "auto_update": false
 }

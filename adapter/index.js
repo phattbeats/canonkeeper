@@ -3,7 +3,7 @@
 // SillyTavern.getContext() API, so it doesn't depend on where the extension
 // is installed. The run itself is run.js; this file only wires it up.
 
-import { runCanon, runLive, runAudit, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
+import { runCanon, runLive, runAudit, runClip, recallFor, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
 const ctx = () => SillyTavern.getContext();
@@ -214,6 +214,105 @@ async function onFinding(action, id) {
     }
 }
 
+// --- Clips --------------------------------------------------------------------
+
+/**
+ * The last passage highlighted inside a message, kept as it was selected:
+ * opening the message's action menu to press the clip button clears the
+ * selection on the page.
+ */
+let selection = null;
+
+function trackSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const text = sel.toString().trim();
+    const mes = $(sel.anchorNode?.parentElement).closest('#chat .mes');
+    const inText = $(sel.anchorNode?.parentElement).closest('.mes_text').length && $(sel.focusNode?.parentElement).closest('.mes').is(mes);
+    if (text && mes.length && inText) selection = { at: Number(mes.attr('mesid')), text };
+}
+
+/** Clips a passage of message `at` (the whole message for empty `text`) into the chat's lorebook. */
+async function canonClip(at, text) {
+    const c = ctx();
+    const s = settings();
+    const profile = profileOf(s.profileId);
+    const refuse = running ? 'Canonkeeper is already running'
+        : generating ? 'Wait for the reply to finish'
+            : !c.chatId ? 'Open a chat first'
+                : !profile ? 'Pick a connection profile in Extensions → Canonkeeper first' : null;
+    if (refuse) {
+        toastr.warning(refuse, 'Canonkeeper');
+        throw new Error(refuse);
+    }
+    running = true;
+    renderStatus('running');
+    const toast = toastr.info(`Clipping message ${at}…`, 'Canonkeeper', { timeOut: 0, extendedTimeOut: 0 });
+    try {
+        const { summary } = await runClip(stFor(c, s, profile), { at, text });
+        toastr.success(summary, 'Canonkeeper');
+        return summary;
+    } catch (err) {
+        toastr.error(err.message, 'Canonkeeper: nothing clipped', { timeOut: 15000 });
+        throw err;
+    } finally {
+        toastr.clear(toast);
+        running = false;
+        renderStatus();
+    }
+}
+
+function onClipButton() {
+    const at = Number($(this).closest('.mes').attr('mesid'));
+    const text = selection?.at === at ? selection.text : '';
+    selection = null;
+    canonClip(at, text).catch(() => {});
+}
+
+// --- Recall -------------------------------------------------------------------
+
+/** How long recall may hold up a generation before it is skipped. */
+const RECALL_TIMEOUT_MS = 1000;
+
+/** What recall did on the last generation, for the status view. Kept in memory only. */
+let lastRecall = null;
+
+/** SillyTavern's World Info scan depth, as its own settings panel shows it. */
+function scanDepth() {
+    const n = Number($('#world_info_depth').val());
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The generation interceptor (manifest.json). Before SillyTavern scans World
+ * Info for a reply, it nominates the entries recall picks, through
+ * SillyTavern's own WORLDINFO_FORCE_ACTIVATE, and the scan does the rest.
+ * Anything that goes wrong (a throw, a slow book, a corrupt state) means no
+ * nomination at all, and the generation goes ahead exactly as it would with
+ * recall off. It never aborts a generation and never writes.
+ */
+globalThis.canonkeeperRecall = async (chat, contextSize, abort, type) => {
+    const s = settings();
+    if (!s.recall || type === 'quiet') return;
+    const started = Date.now();
+    try {
+        const c = ctx();
+        // A pick that arrives late is dropped, never handed to a later reply.
+        const work = recallFor({ chat: c.chat, metadata: c.chatMetadata, loadBook: c.loadWorldInfo, settings: s, scanDepth: scanDepth() });
+        const out = await Promise.race([work, new Promise((r) => setTimeout(r, RECALL_TIMEOUT_MS))]);
+        if (!out) {
+            work.catch(() => {});
+            throw new Error(`took longer than ${RECALL_TIMEOUT_MS} ms; skipped`);
+        }
+        if (out.entries.length) await c.eventSource.emit(c.eventTypes.WORLDINFO_FORCE_ACTIVATE, out.entries);
+        lastRecall = { at: started, ok: true, book: out.book, scene: out.scene, considered: out.considered ?? 0, picks: out.picks };
+        if (out.picks.length) log(`recall: ${out.picks.map((p) => `'${p.title}' (~${p.tokens} tokens)`).join(', ')}`);
+    } catch (err) {
+        lastRecall = { at: started, ok: false, error: err.message };
+        log(`recall failed, nothing added: ${err.message}`);
+    }
+};
+
 // --- Live mode ----------------------------------------------------------------
 
 /**
@@ -292,6 +391,19 @@ const html = `
           <input id="canonkeeper_detect_context" class="text_pole" type="number" min="2000" step="1000"></label>
       </div>
       <hr>
+      <label class="checkbox_label" for="canonkeeper_recall">
+        <input id="canonkeeper_recall" type="checkbox">
+        <span>Recall: each turn, add a few more entries the open scene is about</span>
+      </label>
+      <div><small>On top of keyword activation: entries named earlier in the scene that the last messages no longer mention. No model call. If it fails, the reply goes ahead without it.</small></div>
+      <div class="canonkeeper-row">
+        <label>At most (entries)
+          <input id="canonkeeper_recall_entries" class="text_pole" type="number" min="1" step="1"></label>
+        <label>Within (tokens)
+          <input id="canonkeeper_recall_tokens" class="text_pole" type="number" min="50" step="50"></label>
+      </div>
+      <div><small>Clips: highlight a passage in a message, then press <i class="fa-solid fa-scissors"></i> in its message actions (or type <code>/canon-clip at=&lt;message&gt; &lt;passage&gt;</code>). It becomes an entry with a blurb and keys.</small></div>
+      <hr>
       <b>Status (this chat)</b>
       <div id="canonkeeper_status" class="canonkeeper-status"></div>
     </div>
@@ -326,6 +438,8 @@ async function renderStatus(phase) {
         if (last.log?.length) parts.push(`<details><summary>Run log</summary><pre>${esc(last.log.join('\n'))}</pre></details>`);
     }
     if (settings().live || state?.live) parts.push(liveStatus(state?.live));
+    if (settings().recall || lastRecall) parts.push(recallStatus());
+    if (state?.clips?.length) parts.push(clipStatus(state.clips));
     const bookName = state?.book;
     const bound = c.chatMetadata.world_info;
     const boundBook = bound ? await c.loadWorldInfo(bound) : null;
@@ -375,6 +489,23 @@ function auditStatus(a, current) {
     if (a.accepted?.length) parts.push(`<details><summary>Accepted (${a.accepted.length})</summary><pre>${esc(a.accepted.map((x) => `${new Date(x.at).toLocaleString()} ${x.says}: ${x.writes.join('; ') || 'no writes'}`).join('\n'))}</pre></details>`);
     if (a.log?.length) parts.push(`<details><summary>Audit log</summary><pre>${esc(a.log.join('\n'))}</pre></details>`);
     return parts.join('');
+}
+
+/** What recall added to the last reply's prompt. */
+function recallStatus() {
+    const head = `<b>Recall ${settings().recall ? 'on' : 'off'}</b>`;
+    const r = lastRecall;
+    if (!r) return `<div>${head}: no reply generated since the page loaded.</div>`;
+    const when = new Date(r.at).toLocaleTimeString();
+    if (!r.ok) return `<div>${head}: last reply (${esc(when)}) <span class="canonkeeper-error">failed, nothing added: ${esc(r.error)}</span></div>`;
+    const what = r.picks.length ? r.picks.map((p) => `<span class="canonkeeper-recalled" data-uid="${esc(p.uid)}">${esc(p.title)}</span> <small>(~${esc(p.tokens)} tokens, last named at ${esc(p.last)})</small>`).join(', ') : 'nothing to add';
+    return `<div>${head}: last reply (${esc(when)}), scene ${esc(r.scene?.join('–') ?? '?')}: ${what}</div>`;
+}
+
+/** The clips made on this chat, newest first. */
+function clipStatus(clips) {
+    const line = (x) => `${new Date(x.at).toLocaleString()} #${x.message}: ${x.ok ? `${x.title} (keys ${x.keys.join(', ')})${x.dropped?.length ? `; dropped ${x.dropped.map((d) => `${d.key}: ${d.reason}`).join('; ')}` : ''}` : `failed: ${x.error}`}`;
+    return `<details><summary>Clips (${clips.length})</summary><pre>${esc(clips.slice().reverse().map(line).join('\n'))}</pre></details>`;
 }
 
 /** The live state store, for the status view: counts, scene starts, recent cycles. */
@@ -494,6 +625,21 @@ function mountSettings() {
         s.auditVerify = !!this.checked;
         c.saveSettingsDebounced();
     });
+    $('#canonkeeper_recall').prop('checked', !!s.recall).on('change', function () {
+        s.recall = !!this.checked;
+        c.saveSettingsDebounced();
+        renderStatus();
+    });
+    $('#canonkeeper_recall_entries').val(s.recallEntries).on('change', function () {
+        s.recallEntries = Math.max(1, Math.floor(Number(this.value) || DEFAULT_SETTINGS.recallEntries));
+        this.value = s.recallEntries;
+        c.saveSettingsDebounced();
+    });
+    $('#canonkeeper_recall_tokens').val(s.recallTokens).on('change', function () {
+        s.recallTokens = Math.max(50, Math.floor(Number(this.value) || DEFAULT_SETTINGS.recallTokens));
+        this.value = s.recallTokens;
+        c.saveSettingsDebounced();
+    });
     renderStatus();
 }
 
@@ -511,11 +657,35 @@ function registerCommand() {
         returns: 'a one-line summary of the audit',
         helpString: 'Canonkeeper: audits this chat\'s lorebook. Finds keys claimed by two entries, entries with no keys, keys that fire on nearly everything, settings that stop an entry firing, and deleted entries; optionally checks every claim against the messages it cites. Writes nothing: fixes wait in Extensions → Canonkeeper for you to accept.',
     }));
+    c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
+        name: 'canon-clip',
+        callback: async (args, text) => {
+            const at = args.at === undefined || args.at === '' ? c.chat.length - 1 : Number(args.at);
+            return canonClip(at, String(text ?? ''));
+        },
+        returns: 'a one-line summary of the clip',
+        namedArgumentList: [
+            c.SlashCommandNamedArgument.fromProps({ name: 'at', description: 'the message id to clip from (default: the last message)', typeList: [c.ARGUMENT_TYPE.NUMBER] }),
+        ],
+        unnamedArgumentList: [
+            c.SlashCommandArgument.fromProps({ description: 'the passage to clip, as it appears in the message (default: the whole message)', typeList: [c.ARGUMENT_TYPE.STRING] }),
+        ],
+        helpString: 'Canonkeeper: clips a passage of a message into this chat\'s lorebook as a new entry, with a short blurb and keys that bring it back when the story returns to it. One model call. /canon never rewrites a clip.',
+    }));
+}
+
+/** The clip button, in every message's action menu. */
+function mountClipButton() {
+    const button = '<div title="Canonkeeper: clip the highlighted passage (or the whole message) into the lorebook" class="mes_button canonkeeper_clip fa-solid fa-scissors"></div>';
+    $('#message_template .mes_buttons .extraMesButtons').prepend(button);
+    $(document).on('click', '.canonkeeper_clip', onClipButton);
+    document.addEventListener('selectionchange', trackSelection);
 }
 
 jQuery(async () => {
     mountSettings();
     registerCommand();
+    mountClipButton();
     const c = ctx();
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, () => renderStatus());
     // Live mode looks at the chat after anything that changes it. A reply
@@ -527,6 +697,7 @@ jQuery(async () => {
         c.eventSource.on(c.eventTypes[event], () => {
             generating = false;
             scheduleLive();
+            if (lastRecall) renderStatus();
         });
     }
     for (const event of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED']) {

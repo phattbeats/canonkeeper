@@ -14,8 +14,10 @@
 // With --books, the chat had other active lorebooks (see loadOthers): B14
 // runs, and I1 and C7 score the chat's book and the others together, so an
 // entity another book covers counts as found, and once.
+// With --extras, the run directory is an extras run (see loadExtras) and the
+// gate runs only X15 and X16: the step 7 bar.
 //
-//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--audit] [--books] [--json]
+//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--audit] [--books] [--extras] [--json]
 //
 // Exit codes: 0 every check green · 1 at least one check red ·
 //             2 fixtures missing or malformed (never a pass)
@@ -23,7 +25,7 @@
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, loadLive, loadAudit, loadOthers, FixtureError } from './load.js';
+import { loadTranscript, loadAnswerKey, loadRun, loadEdits, loadLedger, loadLive, loadAudit, loadOthers, loadExtras, FixtureError } from './load.js';
 import {
     validateAnswerKey,
     checkI1KeywordCollisions,
@@ -40,9 +42,11 @@ import {
     checkA12AuditCatches,
     checkA13AuditQuiet,
     checkB14OtherBooks,
+    checkX15Recall,
+    checkX16Clip,
 } from './checks.js';
 
-export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false, audit = false, books = false }) {
+export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false, audit = false, books = false, extras = false }) {
     const messages = loadTranscript(join(storyDir, 'transcript.jsonl'));
     const key = loadAnswerKey(join(storyDir, 'answer-key.json'));
 
@@ -53,6 +57,11 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
         const a = loadAudit(runDir);
         const checks = [checkA12AuditCatches(a.planted), checkA13AuditQuiet(a.clean)];
         return { ok: checks.every((c) => c.ok), messages: messages.length, entries: a.planted.book.length, checks };
+    }
+    if (extras) {
+        const x = loadExtras(runDir);
+        const checks = [checkX15Recall(x), checkX16Clip(x)];
+        return { ok: checks.every((c) => c.ok), messages: messages.length, entries: Object.keys(JSON.parse(x.clip.working.bookAfter).entries).length, checks };
     }
     const run = loadRun(runDir);
     const others = books ? loadOthers(runDir) : [];
@@ -78,7 +87,7 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
 }
 
 function parseArgs(argv) {
-    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, audit: false, books: false, json: false };
+    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, audit: false, books: false, extras: false, json: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--story') args.story = argv[++i];
         else if (argv[i] === '--run') args.run = argv[++i];
@@ -88,6 +97,7 @@ function parseArgs(argv) {
         else if (argv[i] === '--live') args.live = true;
         else if (argv[i] === '--audit') args.audit = true;
         else if (argv[i] === '--books') args.books = true;
+        else if (argv[i] === '--extras') args.extras = true;
         else throw new FixtureError(`unknown argument: ${argv[i]}`);
     }
     args.run ??= join(args.story, 'reference');
@@ -99,7 +109,7 @@ function main() {
     let args;
     try {
         args = parseArgs(process.argv.slice(2));
-        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live, audit: args.audit, books: args.books });
+        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live, audit: args.audit, books: args.books, extras: args.extras });
     } catch (err) {
         if (!(err instanceof FixtureError)) throw err;
         console.error(`FIXTURE ERROR: ${err.message}`);
