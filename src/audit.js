@@ -174,6 +174,20 @@ function overlaps(entries) {
     return out;
 }
 
+/**
+ * An overlap on a key that already collides is the same problem seen again:
+ * the bare title is what the collision is about. It goes inside the collision
+ * as `related` instead of making a row of its own; one row, one fix.
+ */
+function mergeOverlaps(clashes, found) {
+    return found.filter((o) => {
+        const host = clashes.find((c) => fold(c.key) === fold(o.key) && c.uids.includes(o.uids[0]));
+        if (!host) return true;
+        (host.related ??= []).push({ id: o.id, check: o.check, severity: o.severity, uids: o.uids, message: o.message });
+        return false;
+    });
+}
+
 function noKeys(entries) {
     return entries
         .filter((e) => !e.constant && !keysOf(e).length)
@@ -306,10 +320,10 @@ export function technicalPass({ book, ledger = null, messages, foreign = [] }) {
     const held = new Set(heldEntries(book, ledger?.written ?? {}).map((h) => h.entry.uid));
     const owned = new Set(entries.filter((e) => !held.has(e.uid)).map((e) => e.uid));
     const current = !ledger || ledger.fingerprint === fingerprint(messages);
+    const clashes = [...collisions(entries, pinned, owned), ...crossBook(entries, foreign, pinned, owned)];
     return [
-        ...collisions(entries, pinned, owned),
-        ...crossBook(entries, foreign, pinned, owned),
-        ...overlaps(entries),
+        ...clashes,
+        ...mergeOverlaps(clashes, overlaps(entries)),
         ...noKeys(entries),
         ...overbroad(entries, messages, owned),
         ...probability(entries),
@@ -629,7 +643,7 @@ export const openFindings = (record) => record.findings.filter((f) => !f.dismiss
 
 /** One line per finding, for the CLI and the status view. */
 export function describeFinding(f) {
-    return `${f.severity === 'error' ? 'ERROR' : 'warn '} ${f.check}: ${f.message}${f.recite ? ` [re-cite: ${f.recite.says}]` : ''}${f.fix ? ` [fix: ${f.fix.says}]` : ''}${f.held ? ` [held: ${f.held}]` : ''}${f.dismissed ? ' [dismissed]' : ''}`;
+    return `${f.severity === 'error' ? 'ERROR' : 'warn '} ${f.check}: ${f.message}${(f.related ?? []).map((r) => `\n        also: ${r.message}`).join('')}${f.recite ? ` [re-cite: ${f.recite.says}]` : ''}${f.fix ? ` [fix: ${f.fix.says}]` : ''}${f.held ? ` [held: ${f.held}]` : ''}${f.dismissed ? ' [dismissed]' : ''}`;
 }
 
 // ── The review queue: accepting a fix ───────────────────────────────────────

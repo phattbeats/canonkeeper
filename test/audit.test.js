@@ -48,6 +48,16 @@ function verdictsReply(count, overrides = {}) {
 
 // ── the technical pass ──────────────────────────────────────────────────────
 
+test('overlap warnings on a colliding key sit inside the collision: one row', () => {
+    const book = readJson('broken-collision', 'book.json');
+    const all = technicalPass({ book, messages });
+    const rows = all.filter((f) => /captain/i.test(f.key ?? ''));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].check, 'collision');
+    assert.ok(!all.some((f) => f.check === 'overlap' && /captain/i.test(f.key)));
+    assert.ok(rows[0].related.every((r) => r.check === 'overlap'));
+});
+
 test('the planted collision in the broken fixture is caught, on both entries', () => {
     const book = readJson('broken-collision', 'book.json');
     const found = of(technicalPass({ book, messages }), 'collision');
