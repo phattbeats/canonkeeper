@@ -316,7 +316,7 @@ export async function runLive(st) {
 function auditSummary(record, bookName) {
     const open = openFindings(record);
     const errors = open.filter((f) => f.severity === 'error').length;
-    const fixes = open.filter((f) => f.fix).length;
+    const fixes = open.filter((f) => f.fix || f.recite).length;
     const c = record.claims;
     const claims = c.total ? ` ${c.checked} of ${c.total} claims verified${record.reused ? ` (${record.reused} kept from the last audit)` : ''}${c.stale ? `, ${c.stale} stale` : ''}.` : '';
     return `Canonkeeper audit of '${bookName}': ${open.length ? `${open.length} finding${open.length === 1 ? '' : 's'} (${errors} error${errors === 1 ? '' : 's'}), ${fixes} with a fix to review` : 'nothing found'}.${claims}`;
@@ -371,7 +371,7 @@ export async function runAudit(st, { verify = true, recheck = false } = {}) {
  * so the queue matches the book. Refuses, writing nothing, if the chat or
  * the book changed since the audit.
  */
-export async function acceptFinding(st, id) {
+export async function acceptFinding(st, id, choice = 'fix') {
     const state = st.metadata[STATE_KEY] ?? {};
     const record = state.audit;
     if (!record?.findings) throw new Error('no audit on this chat yet: run /canon-audit');
@@ -382,12 +382,12 @@ export async function acceptFinding(st, id) {
     book.entries ??= {};
     const ledger = state.book === bookName ? state.ledger ?? null : null;
     const { foreign } = await otherBooks(st, bookName);
-    const out = await accept({ book, ledger, messages, record, id, foreign });
+    const out = await accept({ book, ledger, messages, record, id, foreign, choice });
     if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched; nothing was written');
     await st.saveBook(bookName, out.book);
     st.log?.(`accepted ${id}: ${out.writes.join('; ') || 'no writes'}`);
-    const next = await audit({ book: out.book, ledger: out.ledger, messages, foreign, previous: record });
-    const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: record.findings.find((f) => f.id === id).fix.says, writes: out.writes }];
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, foreign, previous: out.record });
+    const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: record.findings.find((f) => f.id === id)[choice === 'recite' ? 'recite' : 'fix'].says, writes: out.writes }];
     st.metadata[STATE_KEY] = {
         ...state,
         version: STATE_VERSION,

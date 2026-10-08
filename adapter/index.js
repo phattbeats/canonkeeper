@@ -196,14 +196,14 @@ async function canonAudit(recheck = false) {
 }
 
 /** Accept or dismiss one finding of the review queue. */
-async function onFinding(action, id) {
+async function onFinding(action, id, choice) {
     const c = ctx();
     if (running) return toastr.warning('Wait for the run to finish', 'Canonkeeper');
     running = true;
     try {
         const st = { ...stFor(c, settings(), { id: '', name: '' }), generate: null };
         if (action === 'accept') {
-            const { writes } = await acceptFinding(st, id);
+            const { writes } = await acceptFinding(st, id, choice);
             toastr.success(writes.length ? writes.join('\n') : 'No change was needed', 'Canonkeeper: fix accepted');
         } else await dismissFinding(st, id);
     } catch (err) {
@@ -444,7 +444,7 @@ async function renderStatus(phase) {
         if (open.has(x.textContent.split(' ')[0])) x.parentElement.open = true;
     });
     el.querySelectorAll('input[data-uid]').forEach((box) => box.addEventListener('change', () => setPin(bookName, box.dataset.uid, box.checked)));
-    el.querySelectorAll('[data-finding]').forEach((b) => b.addEventListener('click', () => onFinding(b.dataset.action, b.dataset.finding)));
+    el.querySelectorAll('[data-finding]').forEach((b) => b.addEventListener('click', () => onFinding(b.dataset.action, b.dataset.finding, b.dataset.fix)));
 }
 
 /**
@@ -458,7 +458,8 @@ function auditStatus(a, current) {
     const open = a.findings.filter((f) => !f.dismissed);
     const line = (f) => {
         const buttons = [
-            f.fix && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-finding="${esc(f.id)}" title="${esc(f.fix.says)}">Accept: ${esc(f.fix.says)}</div>` : '',
+            f.recite && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="recite" data-finding="${esc(f.id)}" title="${esc(f.recite.says)}">Accept: ${esc(f.recite.says)}</div>` : '',
+            f.fix && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="fix" data-finding="${esc(f.id)}" title="${esc(f.fix.says)}">Accept: ${esc(f.fix.says)}</div>` : '',
             `<div class="menu_button" data-action="dismiss" data-finding="${esc(f.id)}">Dismiss</div>`,
         ].join('');
         return `<div class="canonkeeper-finding canonkeeper-${f.severity}" data-id="${esc(f.id)}"><span>${f.severity === 'error' ? '✖' : '⚠'} ${esc(f.check)}: ${esc(f.message)}</span>${f.held ? ` <small>(held: ${esc(f.held)})</small>` : ''}<div class="canonkeeper-row">${buttons}</div></div>`;
@@ -466,7 +467,7 @@ function auditStatus(a, current) {
     const parts = [`<div>${head}: ${esc(a.summary ?? '')}</div>`];
     if (a.books?.length) parts.push(`<div><small>Also read for key clashes: ${esc(a.books.map((b) => b.name).join(', '))}</small></div>`);
     if (a.error) parts.push(`<div class="canonkeeper-error">Last audit failed: ${esc(a.error.message)}</div>`);
-    if (!current && open.some((f) => f.fix)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
+    if (!current && open.some((f) => f.fix || f.recite)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
     if (open.length) parts.push(`<details open><summary>Review queue (${open.length})</summary>${open.map(line).join('')}</details>`);
     const dismissed = a.findings.filter((f) => f.dismissed);
     if (dismissed.length) parts.push(`<details><summary>Dismissed (${dismissed.length})</summary><pre>${esc(dismissed.map((f) => `${f.check}: ${f.message}`).join('\n'))}</pre></details>`);

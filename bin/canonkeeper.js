@@ -6,7 +6,7 @@
 //   canonkeeper rerun <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
 //   canonkeeper update <transcript.jsonl> --run <dir> [--out <dir>] [--model <id> | --replay <replies.json>] [--context <tokens>] [--dry-run]
 //   canonkeeper audit <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--no-verify] [--recheck]
-//   canonkeeper accept <transcript.jsonl> --run <dir> <finding id>
+//   canonkeeper accept <transcript.jsonl> --run <dir> [--recite] <finding id>
 //   canonkeeper dismiss <dir> <finding id>
 //
 // build writes book.json, scenes.json, ledger.json and replies.json (the raw
@@ -54,6 +54,7 @@ function parseArgs(argv) {
         else if (a === '--dry-run') args.dryRun = true;
         else if (a === '--no-verify') args.noVerify = true;
         else if (a === '--recheck') args.recheck = true;
+        else if (a === '--recite') args.recite = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
     }
@@ -167,17 +168,17 @@ async function main() {
 
     if (cmd === 'accept') {
         const [transcript, id] = args._;
-        if (!transcript || !args.dir || !id) throw new Error('usage: canonkeeper accept <transcript.jsonl> --run <dir> <finding id>');
+        if (!transcript || !args.dir || !id) throw new Error('usage: canonkeeper accept <transcript.jsonl> --run <dir> [--recite] <finding id>');
         const messages = parseTranscript(readFileSync(transcript, 'utf8'));
         const ledgerPath = join(args.dir, 'ledger.json');
         const record = readJson(join(args.dir, 'audit.json'));
-        const out = await accept({ book: readJson(join(args.dir, 'book.json')), ledger: existsSync(ledgerPath) ? readJson(ledgerPath) : null, messages, record, id });
+        const out = await accept({ book: readJson(join(args.dir, 'book.json')), ledger: existsSync(ledgerPath) ? readJson(ledgerPath) : null, messages, record, id, choice: args.recite ? 'recite' : 'fix' });
         for (const line of out.writes) console.log(`  ${line}`);
         writeJson(join(args.dir, 'book.json'), out.book);
         if (out.ledger) writeJson(ledgerPath, out.ledger);
         // The fix changed the book: the technical pass runs again, and the
         // claims' verdicts carry over.
-        const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: record });
+        const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: out.record });
         writeJson(join(args.dir, 'audit.json'), next);
         printAudit(next);
         return;

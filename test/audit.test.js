@@ -413,3 +413,131 @@ test('/canon-audit on a chat with no lorebook says so and keeps the error', asyn
     await assert.rejects(runAudit(st), /no lorebook/);
     assert.match(st.metadata[STATE_KEY].audit.error.message, /no lorebook/);
 });
+
+// ── re-citing: a true fact that cites the wrong message ─────────────────────
+
+const MISCITED = { entity: 'Dovrin Kesh', text: 'Orders the watch to search couriers for the stolen charts.', wrongly: [30], truly: [12] };
+
+/** The recorded build with one true fact citing the wrong message, and the plant's false facts added. */
+async function miscited() {
+    const reply = extractJson(recorded[0]);
+    const fact = reply.entities.find((e) => e.name === MISCITED.entity).facts.find((f) => f.text === MISCITED.text);
+    fact.messages = MISCITED.wrongly;
+    for (const f of plant.falseFacts) reply.entities.find((e) => e.name === f.entity).facts.push({ text: f.text, messages: f.messages });
+    const out = await build({ messages, generate: replay([JSON.stringify(reply), ...recorded.slice(1)]), contextTokens: CONTEXT });
+    return out;
+}
+
+/**
+ * A claim checker that knows the truth: a claim is supported when it cites a
+ * message that really says it. Counts how many claims it was asked about.
+ */
+function checker(truth, seen = []) {
+    return async ({ user }) => {
+        const claims = [...user.matchAll(/^C(\d+) · .* · cites ((?:#\d+(?:, )?)+): (.*)$/gm)];
+        return JSON.stringify({
+            claims: claims.map(([, n, cites, text]) => {
+                seen.push({ text, cites: cites.split(', ').map((c) => Number(c.slice(1))) });
+                const real = truth[text];
+                const ok = real && cites.split(', ').some((c) => real.includes(Number(c.slice(1))));
+                return { id: `C${n}`, why: '', verdict: ok ? 'supported' : 'unsupported' };
+            }),
+        });
+    };
+}
+const TRUTH = { [MISCITED.text]: MISCITED.truly };
+for (const e of extractJson(recorded[0]).entities) for (const f of e.facts) if (f.text !== MISCITED.text) TRUTH[f.text] ??= f.messages;
+
+test('a true fact citing the wrong message gets a re-cite to the right one, beside drop; a false fact gets none', async () => {
+    const { book, ledger } = await miscited();
+    const record = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT });
+    const claims = of(record.findings, 'claim');
+    const mis = claims.find((f) => f.claim === MISCITED.text);
+    assert.ok(mis, 'the mis-citation is flagged');
+    assert.equal(mis.fix.op, 'drop-fact');
+    assert.equal(mis.recite.op, 'recite');
+    assert.deepEqual(mis.recite.messages, MISCITED.truly);
+    // The planted false facts: flagged, nothing to re-cite to.
+    for (const f of plant.falseFacts) {
+        const hit = claims.find((x) => x.claim === f.text);
+        assert.ok(hit, `not flagged: ${f.text}`);
+        assert.equal(hit.recite, null);
+        assert.equal(hit.fix.op, 'drop-fact');
+    }
+    assert.match(record.recites[claimId(mis.uids[0], MISCITED.text)].ids.join(), /12/);
+});
+
+test('accepting a re-cite updates the fact\'s provenance and nothing else, with no model call', async () => {
+    const { book, ledger } = await miscited();
+    const record = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT });
+    const f = of(record.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    const before = structuredClone(book);
+    const out = await accept({ book, ledger, messages, record, id: f.id, choice: 'recite' });
+    assert.deepEqual(book, before, 'accept does not touch its inputs');
+    const kesh = titled(out.book, MISCITED.entity);
+    assert.deepEqual(kesh.canonkeeper.facts.find((x) => x.text === MISCITED.text).sources, [[12, 12]]);
+    assert.deepEqual(out.ledger.entities.find((e) => e.uid === kesh.uid).facts.find((x) => x.text === MISCITED.text).messages, [12]);
+    assert.ok(kesh.content.includes(MISCITED.text), 'the fact stays');
+    assert.equal(out.writes.length, 1);
+    // The next audit, with no model call, finds the fact supported and the queue without it.
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: out.record });
+    assert.ok(!of(next.findings, 'claim').some((x) => x.claim === MISCITED.text));
+    assert.equal(next.verdicts[claimId(kesh.uid, MISCITED.text)].verdict, 'supported');
+    // And a full re-check of the new book agrees.
+    const again = await audit({ book: out.book, ledger: out.ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT, recheck: true });
+    assert.ok(!of(again.findings, 'claim').some((x) => x.claim === MISCITED.text));
+    const unchanged = await update({ book: out.book, ledger: out.ledger, messages, generate: noModel, contextTokens: CONTEXT });
+    assert.deepEqual(unchanged.plan, []);
+});
+
+test('a suggestion that fails the claim check is never queued', async () => {
+    const { book, ledger } = await miscited();
+    // The checker finds the fact in no message at all, so the search has candidates and every one fails.
+    const seen = [];
+    const record = await audit({ book, ledger, messages, generate: checker({ ...TRUTH, [MISCITED.text]: [] }, seen), contextTokens: CONTEXT });
+    const f = of(record.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    assert.ok(f, 'still flagged');
+    assert.equal(f.recite, null);
+    assert.ok(seen.filter((c) => c.text === MISCITED.text).length > 1, 'candidates were tried');
+});
+
+test('a re-cite search is kept with the verdict, and redone on a re-check', async () => {
+    const { book, ledger } = await miscited();
+    const first = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT, profile: 'a' });
+    const seen = [];
+    const again = await audit({ book, ledger, messages, generate: checker(TRUTH, seen), contextTokens: CONTEXT, previous: first, profile: 'a' });
+    assert.equal(seen.length, 0);
+    assert.deepEqual(of(again.findings, 'claim').map((f) => f.recite), of(first.findings, 'claim').map((f) => f.recite));
+    const other = [];
+    await audit({ book, ledger, messages, generate: checker(TRUTH, other), contextTokens: CONTEXT, previous: first, profile: 'b' });
+    assert.ok(other.length > 0);
+});
+
+test('an entry the user edited gets no re-cite, as it gets no drop', async () => {
+    const { book, ledger } = await miscited();
+    titled(book, MISCITED.entity).content += ' Edited by hand.';
+    const record = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT });
+    const f = of(record.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    assert.equal(f.fix, null);
+    assert.equal(f.recite, null);
+});
+
+test('in SillyTavern: Accept on a re-cite changes the fact\'s sources, is logged, and leaves the queue', async () => {
+    const reply = extractJson(recorded[0]);
+    reply.entities.find((e) => e.name === MISCITED.entity).facts.find((f) => f.text === MISCITED.text).messages = MISCITED.wrongly;
+    const st = fakeST();
+    st.generate = replay([JSON.stringify(reply), ...recorded.slice(1)]);
+    const { bookName } = await runCanon(st);
+    st.generate = checker(TRUTH);
+    await runAudit(st);
+    const f = st.metadata[STATE_KEY].audit.findings.find((x) => x.claim === MISCITED.text);
+    assert.ok(f.recite && f.fix);
+    st.generate = noModel;
+    await acceptFinding(st, f.id, 'recite');
+    const kesh = titled(st.books[bookName], MISCITED.entity);
+    assert.deepEqual(kesh.canonkeeper.facts.find((x) => x.text === MISCITED.text).sources, [[12, 12]]);
+    const after = st.metadata[STATE_KEY].audit;
+    assert.match(after.accepted[0].says, /cite #12/);
+    assert.ok(!after.findings.some((x) => x.claim === MISCITED.text));
+    assert.ok(kesh.content.includes(MISCITED.text));
+});

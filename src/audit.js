@@ -14,6 +14,11 @@
 //      to the model with exactly the messages they cite, and come back
 //      supported, unsupported or contradicted.
 //
+// A fact the cited messages don't support is often true, and cites the wrong
+// message. For those the audit also searches the chat for the messages that do
+// support it, and offers to re-cite the fact to them next to dropping it. A
+// suggestion is queued only if it passes the same claim check.
+//
 // The audit writes nothing. A finding that can be fixed carries its fix, and
 // a fix is applied only when someone accepts it (accept()): that is the
 // review queue. Every fix here changes something a human may want as it is
@@ -440,8 +445,69 @@ export async function verifyClaims({ messages, claims, generate, contextTokens, 
     return { verdicts, unchecked, calls };
 }
 
+
+// ── Re-citing: finding the message that does support a fact ─────────────────
+
+/** How many lone messages are tried for a fact, and how many are tried together. */
+const RECITE_SINGLES = 5;
+const RECITE_TOGETHER = 3;
+const STOP = new Set('the and for with that this from they them their there then than was were has have had his her she him its not but are you your who what when where which while into onto over under about after before been being would could should will just only also very more most some any one two out off all can did does done'.split(' '));
+const stem = (w) => w.replace(/s$/, '').slice(0, 6);
+const wordsOf = (s) => [...new Set((String(s).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOP.has(w)).map(stem))];
+
+/**
+ * Messages that might support `claim`, best first, by the rare words they
+ * share with the fact (plain code, no model). A message the fact already
+ * cites is left out: those were just judged.
+ */
+export function recitePool(messages, claim, limit = RECITE_SINGLES) {
+    const want = wordsOf(claim.text);
+    if (!want.length) return [];
+    const have = messages.map((m) => new Set(wordsOf(m.text)));
+    const idf = new Map(want.map((w) => [w, Math.log(1 + messages.length / (1 + have.filter((h) => h.has(w)).length))]));
+    const need = Math.min(2, want.length);
+    const cited = new Set(claim.cited ?? claim.ids);
+    return have
+        .map((h, id) => {
+            const hit = want.filter((w) => h.has(w));
+            return { id, hits: hit.length, score: hit.reduce((n, w) => n + idf.get(w), 0) };
+        })
+        .filter((x) => x.hits >= need && !cited.has(x.id))
+        .sort((a, b) => b.score - a.score || a.id - b.id)
+        .slice(0, limit)
+        .map((x) => x.id);
+}
+
+/**
+ * For each unsupported claim, looks for messages that do support it: the
+ * best few messages alone, then the best three together. Each candidate is
+ * a claim check like any other, and the smallest set the checker calls
+ * supported wins; no set that passes means no suggestion (`null`), which is
+ * what a false fact gets. Returns { found, calls }: `found` maps a claim id
+ * to the message ids, or null.
+ */
+export async function suggestSources({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT }) {
+    const tries = [];
+    for (const c of claims) {
+        const pool = recitePool(messages, c);
+        const sets = pool.map((id) => [id]);
+        if (pool.length > 1) sets.push(pool.slice(0, RECITE_TOGETHER).sort((a, b) => a - b));
+        sets.forEach((ids, n) => tries.push({ claim: c, ids, id: `${c.id}~${n}`, uid: c.uid, title: c.title, text: c.text }));
+    }
+    const found = Object.fromEntries(claims.map((c) => [c.id, null]));
+    if (!tries.length) return { found, calls: 0 };
+    const out = await verifyClaims({ messages, claims: tries, generate, contextTokens, maxOutputTokens });
+    // Tries are in best-first order; the smallest passing set wins, the earlier on a tie.
+    for (const t of tries) {
+        if (out.verdicts[t.id]?.verdict !== 'supported') continue;
+        const now = found[t.claim.id];
+        if (!now || t.ids.length < now.length) found[t.claim.id] = t.ids;
+    }
+    return { found, calls: out.calls };
+}
+
 /** Findings from claim verdicts. Only a fact in an entry Canonkeeper still owns can be dropped. */
-function claimFindings(claims, stale, verdicts, held) {
+function claimFindings(claims, stale, verdicts, held, recites = {}) {
     const out = [];
     for (const c of claims) {
         const v = verdicts[c.id];
@@ -458,6 +524,7 @@ function claimFindings(claims, stale, verdicts, held) {
             verdict: v.verdict,
             message: `'${c.title}': "${c.text}" is ${v.verdict} by the messages it cites (${c.ids.map((id) => `#${id}`).join(', ')})${v.why ? `. ${v.why}` : ''}`,
             fix: why ? null : { op: 'drop-fact', uid: c.uid, text: c.text, says: `drop this fact from '${c.title}'` },
+            recite: why || !recites[c.id]?.ids ? null : { op: 'recite', uid: c.uid, text: c.text, messages: recites[c.id].ids, says: `cite ${recites[c.id].ids.map((id) => `#${id}`).join(', ')} for this fact in '${c.title}'` },
             ...(why ? { held: why } : {}),
         });
     }
@@ -483,7 +550,7 @@ function claimFindings(claims, stale, verdicts, held) {
  * unchecked. Findings a human dismissed in `previous` stay dismissed.
  *
  * Returns the audit record: { version, at, fingerprint, bookHash, findings,
- * claims: { total, checked, stale, unchecked }, verdicts, verdictKeys, reused, calls, dismissed }.
+ * claims: { total, checked, stale, unchecked }, verdicts, verdictKeys, recites, reused, calls, dismissed }.
  */
 export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date() }) {
     if (!messages.length) throw new Error('empty transcript');
@@ -511,8 +578,34 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
         ({ unchecked, calls } = out);
     } else unchecked = todo.map((c) => ({ id: c.id, reason: 'not verified in this audit' }));
     const held = new Map(heldEntries(book, ledger?.written ?? {}).map((h) => [h.entry.uid, h.reason]));
+    // Re-cites: for an unsupported fact in an entry Canonkeeper owns, the
+    // messages that do support it. A search is kept while the claim, the
+    // messages it cites, the checker profile and the messages it found are as
+    // they were (a search that found nothing, while the chat is as it was).
+    const recites = {};
+    const asked = claims.filter((c) => verdicts[c.id]?.verdict === 'unsupported' && !held.has(c.uid));
+    const sameChat = previous?.fingerprint === fingerprint(messages);
+    const reusableRecite = (c) => {
+        const old = previous?.recites?.[c.id];
+        if (recheck || !old || old.key !== keyOf(c) || (generate && (old.profile ?? null) !== (profile ?? null))) return null;
+        const intact = old.ids ? old.ids.every((id, i) => id < messages.length && messageHash(messages[id]) === old.at[i]) : sameChat;
+        return intact ? old : null;
+    };
+    for (const c of asked) {
+        const old = reusableRecite(c);
+        if (old) recites[c.id] = old;
+    }
+    const search = asked.filter((c) => !recites[c.id]);
+    if (generate && search.length) {
+        const out = await suggestSources({ messages, claims: search, generate, contextTokens, maxOutputTokens });
+        calls += out.calls;
+        for (const c of search) {
+            const ids = out.found[c.id];
+            recites[c.id] = { key: keyOf(c), profile: profile ?? null, ids, at: ids ? ids.map((id) => messageHash(messages[id])) : null };
+        }
+    }
     const dismissed = (previous?.dismissed ?? []).filter((id) => typeof id === 'string');
-    const findings = [...technical, ...claimFindings(claims, stale, verdicts, held)].map((f) => (dismissed.includes(f.id) ? { ...f, dismissed: true } : f));
+    const findings = [...technical, ...claimFindings(claims, stale, verdicts, held, recites)].map((f) => (dismissed.includes(f.id) ? { ...f, dismissed: true } : f));
     return {
         version: AUDIT_VERSION,
         at: now.toISOString(),
@@ -522,6 +615,7 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
         claims: { total: claims.length + stale.length, checked: Object.keys(verdicts).length, stale: stale.length, unchecked: unchecked.length },
         verdicts,
         verdictKeys: keys,
+        recites,
         reused: kept.length,
         unchecked,
         calls,
@@ -534,7 +628,7 @@ export const openFindings = (record) => record.findings.filter((f) => !f.dismiss
 
 /** One line per finding, for the CLI and the status view. */
 export function describeFinding(f) {
-    return `${f.severity === 'error' ? 'ERROR' : 'warn '} ${f.check}: ${f.message}${f.fix ? ` [fix: ${f.fix.says}]` : ''}${f.held ? ` [held: ${f.held}]` : ''}${f.dismissed ? ' [dismissed]' : ''}`;
+    return `${f.severity === 'error' ? 'ERROR' : 'warn '} ${f.check}: ${f.message}${f.recite ? ` [re-cite: ${f.recite.says}]` : ''}${f.fix ? ` [fix: ${f.fix.says}]` : ''}${f.held ? ` [held: ${f.held}]` : ''}${f.dismissed ? ' [dismissed]' : ''}`;
 }
 
 // ── The review queue: accepting a fix ───────────────────────────────────────
@@ -557,18 +651,25 @@ const noModel = async () => {
  *   drop-fact       takes the fact out of the ledger's canon (an entity left
  *                   with none goes), and the entry is compiled again.
  *
- * The last two go through update(), with no model call, so keys stay unique
- * across the book. Returns { book, ledger, writes }: `writes` describes each
- * entry written, and `ledger` is unchanged for a book edit.
+ *   recite          points the fact at the messages the audit found for it
+ *                   instead of the ones it cited (a claim finding offers this
+ *                   next to drop-fact, and `choice: 'recite'` takes it).
+ *
+ * The last three go through update(), with no model call, so keys stay unique
+ * across the book. Returns { book, ledger, writes, record }: `writes`
+ * describes each entry written, `ledger` is unchanged for a book edit, and
+ * `record` is the audit to pass as `previous` to the next one. For a re-cite
+ * it already holds the fact as supported by its new messages, since that is
+ * the check the suggestion passed.
  */
-export async function accept({ book, ledger, messages, record, id, foreign = [] }) {
+export async function accept({ book, ledger, messages, record, id, foreign = [], choice = 'fix' }) {
     const f = record.findings.find((x) => x.id === id);
     if (!f) throw new Error(`no finding '${id}' in the audit`);
-    if (!f.fix) throw new Error(`finding '${id}' has no fix to accept`);
+    const fix = choice === 'recite' ? f.recite : f.fix;
+    if (!fix) throw new Error(`finding '${id}' has no ${choice === 'recite' ? 're-cite' : 'fix'} to accept`);
     if (record.fingerprint !== fingerprint(messages) || record.bookHash !== hashOf(book.entries ?? {})) {
         throw new StaleAuditError('the chat or the book changed since the audit: audit again before accepting a fix');
     }
-    const fix = f.fix;
     if (fix.op === 'drop-key' || fix.op === 'set') {
         const out = structuredClone(book);
         const writes = [];
@@ -579,7 +680,7 @@ export async function accept({ book, ledger, messages, record, id, foreign = [] 
             else e.key = (e.key ?? []).filter((k) => fold(String(k).trim()) !== fold(fix.key));
             writes.push(`update ${uid} '${title(e)}' (${fix.op === 'set' ? Object.keys(fix.fields).join(', ') : 'key'})`);
         }
-        return { book: out, ledger, writes };
+        return { book: out, ledger, writes, record };
     }
     if (!ledger) throw new Error('this fix needs the ledger');
     if (ledger.fingerprint !== fingerprint(messages)) throw new StaleAuditError('the book is behind the chat: run /canon first');
@@ -596,9 +697,27 @@ export async function accept({ book, ledger, messages, record, id, foreign = [] 
         if (at < 0) throw new Error(`the ledger has no such fact for uid ${fix.uid}`);
         e.facts.splice(at, 1);
         if (!e.facts.length) next.entities = next.entities.filter((x) => x !== e);
+    } else if (fix.op === 'recite') {
+        const e = next.entities.find((x) => x.uid === fix.uid);
+        const fact = e?.facts.find((x) => fold(x.text) === fold(fix.text));
+        if (!fact) throw new Error(`the ledger has no such fact for uid ${fix.uid}`);
+        if (!fix.messages.every((m) => Number.isInteger(m) && m >= 0 && m < messages.length)) throw new Error('the suggested messages are not in the chat');
+        fact.messages = [...fix.messages].sort((a, b) => a - b);
     } else throw new Error(`unknown fix '${fix.op}'`);
     const out = await update({ book, ledger: next, messages, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000, foreign });
-    return { book: out.book, ledger: out.ledger, writes: out.plan.map((o) => `${o.op} ${o.uid} '${o.title}'${o.fields ? ` (${o.fields.join(', ')})` : ''}`) };
+    const writes = out.plan.map((o) => `${o.op} ${o.uid} '${o.title}'${o.fields ? ` (${o.fields.join(', ')})` : ''}`);
+    return { book: out.book, ledger: out.ledger, writes, record: fix.op === 'recite' ? recited(record, messages, f, fix) : record };
+}
+
+/** The audit record with a re-cited fact's verdict moved to its new messages: supported, by the checker that passed them. */
+function recited(record, messages, f, fix) {
+    const ids = [...fix.messages].sort((a, b) => a - b);
+    const cid = claimId(fix.uid, fix.text); // the claim keeps its id: same entry, same words
+    return {
+        ...record,
+        verdicts: { ...record.verdicts, [cid]: { verdict: 'supported', why: `re-cited to ${ids.map((id) => `#${id}`).join(', ')}` } },
+        verdictKeys: { ...record.verdictKeys, [cid]: { key: hashOf({ claim: cid, cites: ids.map((id) => messageHash(messages[id])) }), profile: record.recites?.[cid]?.profile ?? null } },
+    };
 }
 
 /** Marks a finding dismissed. It stays listed, and stays dismissed in later audits. */
