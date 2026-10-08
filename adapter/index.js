@@ -390,7 +390,8 @@ async function liveTick() {
     running = true;
     let cycle = null;
     try {
-        cycle = await runLive({ ...stFor(c, s, writer), detectGenerate: generateFor(c, detector) });
+        const auditor = s.auditVerify ? profileOf(s.auditProfileId) ?? detector : null;
+        cycle = await runLive({ ...stFor(c, s, writer), detectGenerate: generateFor(c, detector), auditGenerate: auditor && generateFor(c, auditor), auditProfile: auditor });
         if (cycle?.update && !cycle.update.ok) toastr.warning(`Live update failed: ${cycle.update.error}`, 'Canonkeeper');
     } finally {
         running = false;

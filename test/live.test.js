@@ -277,3 +277,39 @@ test('L11 goes red on per-message detection, on no updates, and on no cycles', (
     assert.equal(checkL11Live({ cadence: 4, cycles: [] }, 81).ok, false);
     assert.equal(checkL11Live(null, 81).ok, false);
 });
+
+test('after each update the book is audited: a collision planted mid-chat is queued, and no claim is checked twice', async () => {
+    const shown = [];
+    const auditGenerate = async ({ user }) => {
+        const claims = [...user.matchAll(/^C(\d+) · .*?: (.*)$/gm)];
+        shown.push(...claims.map((m) => m[2]));
+        return JSON.stringify({ claims: claims.map((m) => ({ id: `C${m[1]}`, why: 'ok', verdict: 'supported' })) });
+    };
+    const st = fakeST({ detectGenerate: oracle(), generate: writer() });
+    st.auditGenerate = auditGenerate;
+    st.auditProfile = { id: 'aud' };
+    // Play to just after the first update, then plant two human entries on one key (/canon would settle a clash on its own entries by itself).
+    const first = answerKey.boundaries[0];
+    let cycles = await play(st, first + 3);
+    const book = Object.keys(st.books)[0];
+    assert.ok(cycles.find((c) => c.update?.ok)?.audit?.ok, 'the first update was audited');
+    assert.ok(st.metadata[STATE_KEY].audit.findings.every((f) => f.check !== 'collision'));
+    for (const uid of [900, 901]) st.books[book].entries[uid] = { uid, key: ['Zed'], keysecondary: [], comment: `Planted ${uid}`, content: 'A human wrote this.', constant: false, disable: false };
+    const callsBefore = shown.length;
+    cycles = await play(st);
+    const audited = cycles.filter((c) => c.audit);
+    assert.ok(audited.length >= 1 && audited.every((c) => c.audit.ok));
+    const found = st.metadata[STATE_KEY].audit.findings.filter((f) => f.check === 'collision' && !f.dismissed);
+    assert.equal(found.length, 1, 'the planted collision is in the review queue');
+    // Every claim text went to the model once: unchanged facts reuse the cached verdict.
+    assert.ok(shown.length > callsBefore);
+    assert.equal(new Set(shown).size, shown.length);
+});
+
+test('without an audit model the live audit is the technical pass only: no model call', async () => {
+    const st = fakeST({ detectGenerate: oracle(), generate: writer() });
+    const cycles = await play(st, answerKey.boundaries[0] + 3);
+    const c = cycles.find((x) => x.update?.ok);
+    assert.equal(c.audit.ok, true);
+    assert.equal(c.audit.calls, 0);
+});

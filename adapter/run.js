@@ -305,6 +305,22 @@ export async function runLive(st) {
     if (!fresh && rewound == null && !cycle.detection && !cycle.update) return null;
     if (st.currentChatId() !== st.chatId) return null;
 
+    // A book just written is checked at once: the technical pass always (no
+    // model call), claims only if an audit model is given, and then only the
+    // facts the update added or changed (the verdict cache in the last audit
+    // record covers the rest). Findings wait in the review queue.
+    if (cycle.update?.ok) {
+        st.metadata[STATE_KEY] = { ...state, ...extra, version: STATE_VERSION, live };
+        try {
+            const { record } = await runAudit(st, { verify: !!st.auditGenerate, generate: st.auditGenerate, profile: st.auditProfile ?? null });
+            cycle.audit = { ok: true, findings: openFindings(record).length, checked: record.claims.checked, reused: record.reused, calls: record.calls };
+        } catch (err) {
+            log(`audit failed: ${err.message}`);
+            if (st.currentChatId() !== st.chatId) return null;
+            cycle.audit = { ok: false, error: err.message };
+        }
+        extra.audit = st.metadata[STATE_KEY].audit;
+    }
     cycle.ms = Date.now() - started;
     st.metadata[STATE_KEY] = { ...state, ...extra, version: STATE_VERSION, live: logCycle(live, cycle) };
     await st.saveMetadata();
@@ -332,13 +348,13 @@ const AUDIT_BATCH_CLAIMS = 20;
  * messages it cites; without, only the technical pass runs and earlier
  * verdicts carry over. Throws if the chat has no lorebook or is switched.
  */
-export async function runAudit(st, { verify = true, recheck = false, onProgress = null } = {}) {
+export async function runAudit(st, { verify = true, recheck = false, onProgress = null, generate = st.generate, profile = st.profile ?? null } = {}) {
     const started = Date.now();
     const { lines, log } = runLog(st);
     const state = st.metadata[STATE_KEY] ?? {};
     const bookName = st.metadata.world_info;
     const keep = (audit) => {
-        st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, audit: { ...audit, ms: Date.now() - started, profile: verify ? st.profile ?? null : null, log: lines } };
+        st.metadata[STATE_KEY] = { ...state, version: STATE_VERSION, audit: { ...audit, ms: Date.now() - started, profile: verify ? profile : null, log: lines } };
     };
     try {
         if (!bookName) throw new Error('the chat has no lorebook: run /canon first');
@@ -352,7 +368,7 @@ export async function runAudit(st, { verify = true, recheck = false, onProgress 
         log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
         const previous = state.audit?.book === bookName ? state.audit : null;
         const { books, foreign } = await otherBooks(st, bookName, log);
-        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck, onProgress, batchClaims: AUDIT_BATCH_CLAIMS });
+        const record = await audit({ book, ledger, messages, foreign, generate: verify ? generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: profile?.id ?? null, recheck, onProgress, batchClaims: AUDIT_BATCH_CLAIMS });
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
         const summary = auditSummary(record, bookName);
         log(summary);
