@@ -240,6 +240,10 @@ test('claims are batched to fit the window, an entry kept whole', async () => {
     const { claims } = claimsOf({ book, ledger, messages });
     const one = batches(messages, claims, planBudget({ contextTokens: CONTEXT, maxOutputTokens: 8000 }));
     assert.equal(one.batches.length, 1);
+    const capped = batches(messages, claims, planBudget({ contextTokens: CONTEXT, maxOutputTokens: 8000 }), 20);
+    assert.ok(capped.batches.length > 1);
+    assert.equal(capped.batches.flat().length, claims.length);
+    for (const b of capped.batches) assert.ok(b.length <= 20 || new Set(b.map((c) => c.uid)).size === 1);
     const small = batches(messages, claims, planBudget({ contextTokens: 6000, maxOutputTokens: 1500 }));
     assert.ok(small.batches.length > 1);
     assert.equal(small.batches.flat().length + small.tooBig.length, claims.length);

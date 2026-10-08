@@ -402,9 +402,10 @@ export function readVerdicts(text, count) {
 
 /**
  * Groups claims, an entry's claims together, into calls that fit the
- * window. An entry whose claims don't fit even alone is left unchecked.
+ * window, and at most `most` claims each (an entry's claims stay together
+ * even past that). An entry whose claims don't fit even alone is left unchecked.
  */
-export function batches(messages, claims, budget) {
+export function batches(messages, claims, budget, most = Infinity) {
     const byEntry = [];
     for (const c of claims) {
         const last = byEntry[byEntry.length - 1];
@@ -420,7 +421,7 @@ export function batches(messages, claims, budget) {
             tooBig.push(...group);
             continue;
         }
-        if (cur.length && !fits([...cur, ...group])) {
+        if (cur.length && (cur.length + group.length > most || !fits([...cur, ...group]))) {
             out.push(cur);
             cur = [];
         }
@@ -435,9 +436,9 @@ export function batches(messages, claims, budget) {
  * `verdicts` maps a claim id to { verdict, why }. A batch whose reply is
  * unusable after one retry leaves its claims unchecked; the audit goes on.
  */
-export async function verifyClaims({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT, onBatch = null }) {
+export async function verifyClaims({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT, onBatch = null, batchClaims = Infinity }) {
     const budget = planBudget({ contextTokens, maxOutputTokens: Math.min(maxOutputTokens, VERIFY_OUTPUT) });
-    const { batches: groups, tooBig } = batches(messages, claims, budget);
+    const { batches: groups, tooBig } = batches(messages, claims, budget, batchClaims);
     const verdicts = {};
     const unchecked = tooBig.map((c) => ({ id: c.id, reason: 'its cited messages do not fit the window' }));
     let calls = 0;
@@ -570,7 +571,7 @@ function claimFindings(claims, stale, verdicts, held, recites = {}) {
  * Returns the audit record: { version, at, fingerprint, bookHash, findings,
  * claims: { total, checked, stale, unchecked }, verdicts, verdictKeys, recites, reused, calls, dismissed }.
  */
-export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date(), onProgress = null }) {
+export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date(), onProgress = null, batchClaims = Infinity }) {
     if (!messages.length) throw new Error('empty transcript');
     const technical = technicalPass({ book, ledger, messages, foreign });
     const { claims, stale } = claimsOf({ book, ledger, messages });
@@ -594,7 +595,7 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
     let unchecked = [];
     let calls = 0;
     if (generate) {
-        const out = await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens, onBatch: (n) => onProgress?.({ phase: 'claims', checked: kept.length + n, total: claims.length }) });
+        const out = await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens, batchClaims, onBatch: (n) => onProgress?.({ phase: 'claims', checked: kept.length + n, total: claims.length }) });
         Object.assign(verdicts, out.verdicts);
         for (const c of todo) if (out.verdicts[c.id]) keys[c.id] = { key: keyOf(c), profile: profile ?? null };
         ({ unchecked, calls } = out);
@@ -619,6 +620,7 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
     }
     const search = asked.filter((c) => !recites[c.id]);
     if (generate && search.length) {
+        onProgress?.({ phase: 'recite', checked: claims.length, total: claims.length });
         const out = await suggestSources({ messages, claims: search, generate, contextTokens, maxOutputTokens });
         calls += out.calls;
         for (const c of search) {

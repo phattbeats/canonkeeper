@@ -190,8 +190,8 @@ async function canonAudit(recheck = false) {
             recheck,
             onProgress: (p) => {
                 if (p.phase === 'technical') auditProgress = { findings: p.findings, checked: p.checked, total: p.total, pending: p.pending };
-                else if (auditProgress) Object.assign(auditProgress, { checked: p.checked, total: p.total });
-                if (auditProgress?.pending) toast.find?.('.toast-message').text(`Checking claims: ${auditProgress.checked} of ${auditProgress.total} facts…`);
+                else if (auditProgress) Object.assign(auditProgress, { checked: p.checked, total: p.total, recite: p.phase === 'recite' });
+                if (auditProgress?.pending) toast.find?.('.toast-message').text(auditProgress.recite ? 'Looking for the messages that support the flagged facts…' : `Checking claims: ${auditProgress.checked} of ${auditProgress.total} facts…`);
                 renderStatus('running');
             },
         });
@@ -497,7 +497,7 @@ async function renderStatus(phase) {
     const bookName = state?.book;
     const bound = c.chatMetadata.world_info;
     const boundBook = bound ? await c.loadWorldInfo(bound) : null;
-    if (auditProgress) parts.push(auditStatus({ findings: auditProgress.findings, summary: auditProgress.pending ? `technical pass done; checked ${auditProgress.checked} of ${auditProgress.total} facts…` : 'technical pass done.' }, false, true));
+    if (auditProgress) parts.push(auditStatus({ findings: auditProgress.findings, summary: auditProgress.pending ? `technical pass done; ${auditProgress.recite ? `all ${auditProgress.total} facts checked, looking for sources for the flagged ones…` : `checked ${auditProgress.checked} of ${auditProgress.total} facts…`}` : 'technical pass done.' }, false, true));
     else if (state?.audit) parts.push(auditStatus(state.audit, state.audit.book === bound && auditIsCurrent(state.audit, boundBook, c.chat)));
     if (bookName && bookName === bound) {
         const book = boundBook;

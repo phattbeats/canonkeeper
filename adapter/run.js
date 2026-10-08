@@ -322,6 +322,9 @@ function auditSummary(record, bookName) {
     return `Canonkeeper audit of '${bookName}': ${open.length ? `${open.length} finding${open.length === 1 ? '' : 's'} (${errors} error${errors === 1 ? '' : 's'}), ${fixes} with a fix to review` : 'nothing found'}.${claims}`;
 }
 
+/** Claims per claim-check call in the panel: small enough that the count moves while it runs. */
+const AUDIT_BATCH_CLAIMS = 20;
+
 /**
  * Audits the chat's lorebook (src/audit.js) and keeps the result, the review
  * queue, in `chat_metadata.canonkeeper.audit`. Writes nothing to the book.
@@ -349,7 +352,7 @@ export async function runAudit(st, { verify = true, recheck = false, onProgress 
         log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
         const previous = state.audit?.book === bookName ? state.audit : null;
         const { books, foreign } = await otherBooks(st, bookName, log);
-        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck, onProgress });
+        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck, onProgress, batchClaims: AUDIT_BATCH_CLAIMS });
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
         const summary = auditSummary(record, bookName);
         log(summary);
