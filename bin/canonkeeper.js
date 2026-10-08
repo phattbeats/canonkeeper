@@ -6,7 +6,7 @@
 //   canonkeeper rerun <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
 //   canonkeeper update <transcript.jsonl> --run <dir> [--out <dir>] [--model <id> | --replay <replies.json>] [--context <tokens>] [--dry-run]
 //   canonkeeper audit <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--no-verify] [--recheck]
-//   canonkeeper accept <transcript.jsonl> --run <dir> [--recite] <finding id>
+//   canonkeeper accept <transcript.jsonl> --run <dir> [--recite | [--cite 12,15-17] [--text "new wording"] [--force] [--model <id> | --replay <replies.json>]] <finding id>
 //   canonkeeper dismiss <dir> <finding id>
 //
 // build writes book.json, scenes.json, ledger.json and replies.json (the raw
@@ -32,7 +32,7 @@ import { parseTranscript } from '../src/transcript.js';
 import { build } from '../src/build.js';
 import { update } from '../src/update.js';
 import { describe } from '../src/plan.js';
-import { audit, accept, dismiss, describeFinding, openFindings } from '../src/audit.js';
+import { audit, accept, checkHand, parseMessageList, dismiss, describeFinding, openFindings } from '../src/audit.js';
 import { claudeCli } from '../src/models/claude-cli.js';
 import { replay, recording } from '../src/models/replay.js';
 
@@ -55,6 +55,9 @@ function parseArgs(argv) {
         else if (a === '--no-verify') args.noVerify = true;
         else if (a === '--recheck') args.recheck = true;
         else if (a === '--recite') args.recite = true;
+        else if (a === '--cite') args.cite = argv[++i];
+        else if (a === '--text') args.text = argv[++i];
+        else if (a === '--force') args.force = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
     }
@@ -172,7 +175,16 @@ async function main() {
         const messages = parseTranscript(readFileSync(transcript, 'utf8'));
         const ledgerPath = join(args.dir, 'ledger.json');
         const record = readJson(join(args.dir, 'audit.json'));
-        const out = await accept({ book: readJson(join(args.dir, 'book.json')), ledger: existsSync(ledgerPath) ? readJson(ledgerPath) : null, messages, record, id, choice: args.recite ? 'recite' : 'fix' });
+        let hand = {};
+        if (args.cite != null || args.text != null) {
+            // A hand edit is claim-checked before it is saved; a failed check stops it unless --force.
+            const edit = { ...(args.cite != null ? { messages: parseMessageList(args.cite) } : {}), ...(args.text != null ? { text: args.text } : {}) };
+            const checked = await checkHand({ messages, record, id, edit, generate: model(args), contextTokens: args.context, profile: args.model ?? null });
+            console.log(`  claim check: ${checked.verdict}${checked.why ? ` (${checked.why})` : ''}`);
+            if (!checked.ok && !args.force) throw new Error('the messages do not support that change: nothing was saved (--force saves it anyway)');
+            hand = { choice: 'hand', edit, checked };
+        }
+        const out = await accept({ book: readJson(join(args.dir, 'book.json')), ledger: existsSync(ledgerPath) ? readJson(ledgerPath) : null, messages, record, id, choice: args.recite ? 'recite' : 'fix', ...hand });
         for (const line of out.writes) console.log(`  ${line}`);
         writeJson(join(args.dir, 'book.json'), out.book);
         if (out.ledger) writeJson(ledgerPath, out.ledger);

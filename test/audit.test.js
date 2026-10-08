@@ -11,11 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { parseTranscript } from '../src/transcript.js';
 import { build } from '../src/build.js';
 import { update } from '../src/update.js';
-import { technicalPass, claimsOf, readVerdicts, batches, audit, accept, dismiss, openFindings, claimId, StaleAuditError } from '../src/audit.js';
+import { technicalPass, claimsOf, readVerdicts, batches, audit, accept, checkHand, parseMessageList, dismiss, openFindings, claimId, StaleAuditError } from '../src/audit.js';
 import { ModelOutputError, extractJson } from '../src/parse.js';
 import { planBudget } from '../src/budget.js';
 import { replay } from '../src/models/replay.js';
-import { runCanon, runAudit, acceptFinding, dismissFinding, STATE_KEY } from '../adapter/run.js';
+import { runCanon, runAudit, acceptFinding, checkFinding, dismissFinding, STATE_KEY } from '../adapter/run.js';
 
 const STORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'story');
 const readJson = (...p) => JSON.parse(readFileSync(join(STORY, ...p), 'utf8'));
@@ -540,4 +540,107 @@ test('in SillyTavern: Accept on a re-cite changes the fact\'s sources, is logged
     assert.match(after.accepted[0].says, /cite #12/);
     assert.ok(!after.findings.some((x) => x.claim === MISCITED.text));
     assert.ok(kesh.content.includes(MISCITED.text));
+});
+
+// ── fixing a flagged fact by hand ───────────────────────────────────────────
+
+const REWORDED = 'Orders the watch to search every courier for the stolen charts.';
+const HAND_TRUTH = { ...TRUTH, [REWORDED]: [12] };
+
+async function flagged() {
+    const { book, ledger } = await miscited();
+    const record = await audit({ book, ledger, messages, generate: checker(HAND_TRUTH), contextTokens: CONTEXT });
+    const f = of(record.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    return { book, ledger, record, f };
+}
+
+test('message lists a person types are read, and nonsense is refused', () => {
+    assert.deepEqual(parseMessageList('12'), [12]);
+    assert.deepEqual(parseMessageList('#14, 12-13 ; 12'), [12, 13, 14]);
+    assert.throws(() => parseMessageList('twelve'), /not a message number/);
+    assert.throws(() => parseMessageList('15-12'), /not a usable range/);
+    assert.throws(() => parseMessageList('  '), /at least one/);
+});
+
+test('a flagged fact re-pointed by hand to the right message passes the check, is saved with no model call and verifies on the next audit', async () => {
+    const { book, ledger, record, f } = await flagged();
+    assert.deepEqual(f.hand.cites, MISCITED.wrongly);
+    const checked = await checkHand({ messages, record, id: f.id, edit: { messages: [12] }, generate: checker(HAND_TRUTH), contextTokens: CONTEXT });
+    assert.equal(checked.ok, true);
+    const before = structuredClone(book);
+    const out = await accept({ book, ledger, messages, record, id: f.id, choice: 'hand', edit: { messages: [12] }, checked });
+    assert.deepEqual(book, before);
+    const kesh = titled(out.book, MISCITED.entity);
+    assert.deepEqual(kesh.canonkeeper.facts.find((x) => x.text === MISCITED.text).sources, [[12, 12]]);
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: out.record });
+    assert.ok(!of(next.findings, 'claim').some((x) => x.claim === MISCITED.text));
+    const again = await audit({ book: out.book, ledger: out.ledger, messages, generate: checker(HAND_TRUTH), contextTokens: CONTEXT, recheck: true });
+    assert.ok(!of(again.findings, 'claim').some((x) => x.claim === MISCITED.text));
+});
+
+test('a hand rewording the messages do not support is warned about before save, with the reason; saving anyway keeps it flagged', async () => {
+    const { book, ledger, record, f } = await flagged();
+    const wording = 'Orders the watch to burn every courier along with the charts.';
+    const checked = await checkHand({ messages, record, id: f.id, edit: { text: wording }, generate: checker(HAND_TRUTH), contextTokens: CONTEXT });
+    assert.equal(checked.ok, false);
+    assert.equal(checked.verdict, 'unsupported');
+    // Nothing was saved by the check.
+    assert.equal(titled(book, MISCITED.entity).content.includes(wording), false);
+    const out = await accept({ book, ledger, messages, record, id: f.id, choice: 'hand', edit: { text: wording }, checked });
+    const kesh = titled(out.book, MISCITED.entity);
+    assert.ok(kesh.content.includes(wording) && !kesh.content.includes(MISCITED.text));
+    const next = await audit({ book: out.book, ledger: out.ledger, messages, previous: out.record });
+    const still = of(next.findings, 'claim').find((x) => x.claim === wording);
+    assert.ok(still, 'the unsupported wording stays flagged');
+    assert.ok(!of(next.findings, 'claim').some((x) => x.claim === MISCITED.text));
+});
+
+test('a reworded fact and a picked message together are checked as one claim', async () => {
+    const { record, f } = await flagged();
+    const seen = [];
+    const checked = await checkHand({ messages, record, id: f.id, edit: { text: REWORDED, messages: [12] }, generate: checker(HAND_TRUTH, seen), contextTokens: CONTEXT });
+    assert.equal(checked.ok, true);
+    assert.deepEqual(seen, [{ text: REWORDED, cites: [12] }]);
+});
+
+test('a hand edit that changes nothing, names no such message, or skips the check is refused', async () => {
+    const { book, ledger, record, f } = await flagged();
+    const generate = checker(HAND_TRUTH);
+    await assert.rejects(checkHand({ messages, record, id: f.id, edit: {}, generate, contextTokens: CONTEXT }), /nothing was changed/);
+    await assert.rejects(checkHand({ messages, record, id: f.id, edit: { messages: [9999] }, generate, contextTokens: CONTEXT }), /messages must be between/);
+    await assert.rejects(checkHand({ messages, record, id: f.id, edit: { text: '  ' }, generate, contextTokens: CONTEXT }), /cannot be empty/);
+    await assert.rejects(accept({ book, ledger, messages, record, id: f.id, choice: 'hand', edit: { messages: [12] } }), /claim check/);
+});
+
+test('an entry the user edited, or a stale audit, cannot be hand-fixed', async () => {
+    const { book, ledger } = await miscited();
+    titled(book, MISCITED.entity).content += ' Edited by hand.';
+    const held = await audit({ book, ledger, messages, generate: checker(HAND_TRUTH), contextTokens: CONTEXT });
+    const g = of(held.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    assert.equal(g.hand, null);
+    const { book: b2, ledger: l2, record, f } = await flagged();
+    const checked = { verdict: 'supported', why: '', profile: null };
+    titled(b2, MISCITED.entity).content += ' Changed since.';
+    await assert.rejects(accept({ book: b2, ledger: l2, messages, record, id: f.id, choice: 'hand', edit: { messages: [12] }, checked }), StaleAuditError);
+});
+
+test('in SillyTavern: a hand edit is checked, then saved and logged, and a failed check writes nothing until it is saved anyway', async () => {
+    const reply = extractJson(recorded[0]);
+    reply.entities.find((e) => e.name === MISCITED.entity).facts.find((f) => f.text === MISCITED.text).messages = MISCITED.wrongly;
+    const st = fakeST();
+    st.generate = replay([JSON.stringify(reply), ...recorded.slice(1)]);
+    const { bookName } = await runCanon(st);
+    st.generate = checker(HAND_TRUTH);
+    await runAudit(st);
+    const f = st.metadata[STATE_KEY].audit.findings.find((x) => x.claim === MISCITED.text);
+    const bad = await checkFinding(st, f.id, { text: 'Orders the watch to burn every courier.' });
+    assert.equal(bad.ok, false);
+    assert.ok(titled(st.books[bookName], MISCITED.entity).content.includes(MISCITED.text), 'checking writes nothing');
+    const good = await checkFinding(st, f.id, { messages: [12] });
+    assert.equal(good.ok, true);
+    st.generate = noModel;
+    await acceptFinding(st, f.id, 'hand', { messages: [12] }, good);
+    const after = st.metadata[STATE_KEY].audit;
+    assert.match(after.accepted[0].says, /by hand: cited #12/);
+    assert.ok(!after.findings.some((x) => x.claim === MISCITED.text));
 });

@@ -13,7 +13,7 @@ import { update } from '../src/update.js';
 import { describe } from '../src/plan.js';
 import { hashOf, fingerprint } from '../src/fingerprint.js';
 import { seed, rewind, detect, updateTarget, logCycle, isLive, DEFAULT_CADENCE } from '../src/live.js';
-import { audit, accept, dismiss, openFindings } from '../src/audit.js';
+import { audit, accept, checkHand, dismiss, openFindings } from '../src/audit.js';
 import { clip } from '../src/clip.js';
 import { recall, DEFAULT_RECALL } from '../src/recall.js';
 
@@ -371,7 +371,7 @@ export async function runAudit(st, { verify = true, recheck = false } = {}) {
  * so the queue matches the book. Refuses, writing nothing, if the chat or
  * the book changed since the audit.
  */
-export async function acceptFinding(st, id, choice = 'fix') {
+export async function acceptFinding(st, id, choice = 'fix', edit = null, checked = null) {
     const state = st.metadata[STATE_KEY] ?? {};
     const record = state.audit;
     if (!record?.findings) throw new Error('no audit on this chat yet: run /canon-audit');
@@ -382,12 +382,12 @@ export async function acceptFinding(st, id, choice = 'fix') {
     book.entries ??= {};
     const ledger = state.book === bookName ? state.ledger ?? null : null;
     const { foreign } = await otherBooks(st, bookName);
-    const out = await accept({ book, ledger, messages, record, id, foreign, choice });
+    const out = await accept({ book, ledger, messages, record, id, foreign, choice, edit, checked });
     if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched; nothing was written');
     await st.saveBook(bookName, out.book);
     st.log?.(`accepted ${id}: ${out.writes.join('; ') || 'no writes'}`);
     const next = await audit({ book: out.book, ledger: out.ledger, messages, foreign, previous: out.record });
-    const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: record.findings.find((f) => f.id === id)[choice === 'recite' ? 'recite' : 'fix'].says, writes: out.writes }];
+    const accepted = [...(record.accepted ?? []), { id, at: new Date().toISOString(), says: choice === 'hand' ? `by hand: ${handSays(out, edit)}` : record.findings.find((f) => f.id === id)[choice === 'recite' ? 'recite' : 'fix'].says, writes: out.writes }];
     st.metadata[STATE_KEY] = {
         ...state,
         version: STATE_VERSION,
@@ -396,6 +396,20 @@ export async function acceptFinding(st, id, choice = 'fix') {
     };
     await st.saveMetadata();
     return { writes: out.writes };
+}
+
+const handSays = (out, edit) => [edit?.text != null ? 'reworded' : '', edit?.messages ? `cited ${edit.messages.map((m) => `#${m}`).join(', ')}` : ''].filter(Boolean).join(', ');
+
+/**
+ * Runs the claim check on a person's change to a flagged fact, before it is
+ * saved (src/audit.js checkHand). One model call through `st.generate`;
+ * nothing is written. Returns { ok, verdict, why, text, messages, profile }.
+ */
+export async function checkFinding(st, id, edit) {
+    const record = st.metadata[STATE_KEY]?.audit;
+    if (!record?.findings) throw new Error('no audit on this chat yet: run /canon-audit');
+    if (!st.generate) throw new Error('pick a connection profile in Extensions → Canonkeeper to check a change');
+    return checkHand({ messages: toMessages(st.chat), record, id, edit, generate: st.generate, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, profile: st.profile?.id ?? null });
 }
 
 /** Whether an audit record still describes this book and this chat: its fixes can be accepted. */

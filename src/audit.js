@@ -525,6 +525,7 @@ function claimFindings(claims, stale, verdicts, held, recites = {}) {
             message: `'${c.title}': "${c.text}" is ${v.verdict} by the messages it cites (${c.ids.map((id) => `#${id}`).join(', ')})${v.why ? `. ${v.why}` : ''}`,
             fix: why ? null : { op: 'drop-fact', uid: c.uid, text: c.text, says: `drop this fact from '${c.title}'` },
             recite: why || !recites[c.id]?.ids ? null : { op: 'recite', uid: c.uid, text: c.text, messages: recites[c.id].ids, says: `cite ${recites[c.id].ids.map((id) => `#${id}`).join(', ')} for this fact in '${c.title}'` },
+            hand: why ? null : { op: 'hand', uid: c.uid, text: c.text, cites: c.ids },
             ...(why ? { held: why } : {}),
         });
     }
@@ -654,6 +655,11 @@ const noModel = async () => {
  *   recite          points the fact at the messages the audit found for it
  *                   instead of the ones it cited (a claim finding offers this
  *                   next to drop-fact, and `choice: 'recite'` takes it).
+ *   hand            a person's own change to the fact's wording or its cited
+ *                   messages (`choice: 'hand'`, with `edit: { text?, messages? }`
+ *                   and `checked`, the result of checkHand). Saved even when
+ *                   the check failed: the person decided, and the failed
+ *                   verdict is kept, so the next audit still flags it.
  *
  * The last three go through update(), with no model call, so keys stay unique
  * across the book. Returns { book, ledger, writes, record }: `writes`
@@ -662,11 +668,11 @@ const noModel = async () => {
  * it already holds the fact as supported by its new messages, since that is
  * the check the suggestion passed.
  */
-export async function accept({ book, ledger, messages, record, id, foreign = [], choice = 'fix' }) {
+export async function accept({ book, ledger, messages, record, id, foreign = [], choice = 'fix', edit = null, checked = null }) {
     const f = record.findings.find((x) => x.id === id);
     if (!f) throw new Error(`no finding '${id}' in the audit`);
-    const fix = choice === 'recite' ? f.recite : f.fix;
-    if (!fix) throw new Error(`finding '${id}' has no ${choice === 'recite' ? 're-cite' : 'fix'} to accept`);
+    const fix = choice === 'recite' ? f.recite : choice === 'hand' ? f.hand : f.fix;
+    if (!fix) throw new Error(`finding '${id}' has no ${choice === 'recite' ? 're-cite' : choice === 'hand' ? 'hand edit' : 'fix'} to accept`);
     if (record.fingerprint !== fingerprint(messages) || record.bookHash !== hashOf(book.entries ?? {})) {
         throw new StaleAuditError('the chat or the book changed since the audit: audit again before accepting a fix');
     }
@@ -685,6 +691,7 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
     if (!ledger) throw new Error('this fix needs the ledger');
     if (ledger.fingerprint !== fingerprint(messages)) throw new StaleAuditError('the book is behind the chat: run /canon first');
     const next = structuredClone(ledger);
+    let handed = null;
     if (fix.op === 'restore') {
         if (!next.entities.some((e) => e.uid === fix.uid)) throw new Error(`the story no longer has '${fix.name}': nothing to restore`);
         delete next.deleted?.[String(fix.uid)];
@@ -703,10 +710,20 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
         if (!fact) throw new Error(`the ledger has no such fact for uid ${fix.uid}`);
         if (!fix.messages.every((m) => Number.isInteger(m) && m >= 0 && m < messages.length)) throw new Error('the suggested messages are not in the chat');
         fact.messages = [...fix.messages].sort((a, b) => a - b);
+    } else if (fix.op === 'hand') {
+        const change = readEdit(f, messages, edit);
+        if (!checked?.verdict) throw new Error('a hand edit is saved only after the claim check has judged it (checkHand)');
+        const e = next.entities.find((x) => x.uid === fix.uid);
+        const fact = e?.facts.find((x) => fold(x.text) === fold(fix.text));
+        if (!fact) throw new Error(`the ledger has no such fact for uid ${fix.uid}`);
+        if (fold(change.text) !== fold(fix.text) && e.facts.some((x) => x !== fact && fold(x.text) === fold(change.text))) throw new Error(`'${e.name ?? f.titles?.[0]}' already has that fact`);
+        fact.text = change.text;
+        fact.messages = change.messages;
+        handed = { change, checked };
     } else throw new Error(`unknown fix '${fix.op}'`);
     const out = await update({ book, ledger: next, messages, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000, foreign });
     const writes = out.plan.map((o) => `${o.op} ${o.uid} '${o.title}'${o.fields ? ` (${o.fields.join(', ')})` : ''}`);
-    return { book: out.book, ledger: out.ledger, writes, record: fix.op === 'recite' ? recited(record, messages, f, fix) : record };
+    return { book: out.book, ledger: out.ledger, writes, record: fix.op === 'recite' ? recited(record, messages, f, fix) : handed ? handedRecord(record, messages, f, handed) : record };
 }
 
 /** The audit record with a re-cited fact's verdict moved to its new messages: supported, by the checker that passed them. */
@@ -718,6 +735,71 @@ function recited(record, messages, f, fix) {
         verdicts: { ...record.verdicts, [cid]: { verdict: 'supported', why: `re-cited to ${ids.map((id) => `#${id}`).join(', ')}` } },
         verdictKeys: { ...record.verdictKeys, [cid]: { key: hashOf({ claim: cid, cites: ids.map((id) => messageHash(messages[id])) }), profile: record.recites?.[cid]?.profile ?? null } },
     };
+}
+
+// ── Fixing a flagged fact by hand ───────────────────────────────────────────
+
+/**
+ * Reads a person's message list: "12", "12, 15-17", "#12 #14". Returns the
+ * message numbers, sorted and without repeats; throws on anything else.
+ */
+export function parseMessageList(text) {
+    const ids = new Set();
+    for (const part of String(text ?? '').split(/[\s,;]+/).filter(Boolean)) {
+        const m = /^#?(\d+)(?:\s*[-–]\s*#?(\d+))?$/.exec(part);
+        if (!m) throw new Error(`'${part}' is not a message number or a range like 12-15`);
+        const a = Number(m[1]);
+        const b = m[2] == null ? a : Number(m[2]);
+        if (b < a || b - a > 200) throw new Error(`'${part}' is not a usable range`);
+        for (let i = a; i <= b; i++) ids.add(i);
+    }
+    if (!ids.size) throw new Error('name at least one message');
+    return [...ids].sort((x, y) => x - y);
+}
+
+/** A person's change to a flagged fact, checked: { text, messages } to save. Throws if it is empty, unchanged or names a message not in the chat. */
+function readEdit(f, messages, edit) {
+    if (!f.hand) throw new Error(`finding '${f.id}' has no fact a person can edit`);
+    const text = edit?.text == null ? f.hand.text : String(edit.text).replace(/\s+/g, ' ').trim();
+    if (!text) throw new Error('the fact cannot be empty');
+    const ids = edit?.messages == null ? f.hand.cites : [...new Set(edit.messages)].sort((a, b) => a - b);
+    if (!ids.length || !ids.every((m) => Number.isInteger(m) && m >= 0 && m < messages.length)) throw new Error(`messages must be between 0 and ${messages.length - 1}`);
+    if (fold(text) === fold(f.hand.text) && ids.join() === [...f.hand.cites].sort((a, b) => a - b).join()) throw new Error('nothing was changed');
+    return { text, messages: ids };
+}
+
+/**
+ * Runs the claim check on a person's change to a flagged fact, before
+ * anything is saved: the fact as they reworded it (or as it was), against the
+ * messages they picked (or the ones it cited). One model call. Returns
+ * { ok, verdict, why, text, messages, profile }; pass it to accept() as
+ * `checked` with `choice: 'hand'` to save. The caller shows `why` when `ok`
+ * is false and lets the person save anyway or cancel.
+ */
+export async function checkHand({ messages, record, id, edit, generate, contextTokens, maxOutputTokens, profile = null }) {
+    const f = record.findings.find((x) => x.id === id);
+    if (!f) throw new Error(`no finding '${id}' in the audit`);
+    const change = readEdit(f, messages, edit);
+    const claim = { id: claimId(f.hand.uid, change.text), uid: f.hand.uid, title: f.titles?.[0] ?? '', text: change.text, ids: change.messages };
+    const out = await verifyClaims({ messages, claims: [claim], generate, contextTokens, maxOutputTokens });
+    const v = out.verdicts[claim.id];
+    if (!v) throw new Error(`the claim check gave no verdict: ${out.unchecked[0]?.reason ?? 'unknown'}`);
+    return { ok: v.verdict === 'supported', verdict: v.verdict, why: v.why ?? '', ...change, profile };
+}
+
+/** The audit record with a hand-edited fact's verdict, as the check judged it, kept under the fact's new id so the next audit reuses it. */
+function handedRecord(record, messages, f, { change, checked }) {
+    const oldId = claimId(f.hand.uid, f.hand.text);
+    const cid = claimId(f.hand.uid, change.text);
+    const verdicts = { ...record.verdicts };
+    const verdictKeys = { ...record.verdictKeys };
+    delete verdicts[oldId];
+    delete verdictKeys[oldId];
+    verdicts[cid] = { verdict: checked.verdict, why: checked.verdict === 'supported' ? `set by hand: ${checked.why ?? ''}`.trim() : checked.why ?? '' };
+    verdictKeys[cid] = { key: hashOf({ claim: cid, cites: change.messages.map((id) => messageHash(messages[id])) }), profile: checked.profile ?? null };
+    const recites = { ...record.recites };
+    delete recites[oldId];
+    return { ...record, verdicts, verdictKeys, recites };
 }
 
 /** Marks a finding dismissed. It stays listed, and stays dismissed in later audits. */

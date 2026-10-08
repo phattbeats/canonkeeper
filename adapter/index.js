@@ -3,7 +3,8 @@
 // SillyTavern.getContext() API, so it doesn't depend on where the extension
 // is installed. The run itself is run.js; this file only wires it up.
 
-import { runCanon, runLive, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
+import { parseMessageList } from '../src/audit.js';
+import { runCanon, runLive, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, checkFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
 const ctx = () => SillyTavern.getContext();
@@ -195,8 +196,65 @@ async function canonAudit(recheck = false) {
     }
 }
 
+/** A question put to the person: their answer, or null if they cancel. SillyTavern's own popups, plain ones where missing. */
+async function askPerson(c, kind, text, value = '') {
+    if (c.callGenericPopup && c.POPUP_TYPE) {
+        const out = await c.callGenericPopup(text, kind === 'input' ? c.POPUP_TYPE.INPUT : c.POPUP_TYPE.CONFIRM, value, { wide: kind === 'input', rows: 3 });
+        return kind === 'input' ? (out ? String(out) : null) : !!out;
+    }
+    return kind === 'input' ? window.prompt(text, value) : window.confirm(text);
+}
+
+/**
+ * Fix a flagged fact by hand: pick the message it cites, or reword it. The
+ * change goes through the claim check before it is saved. If the check
+ * fails, the person is told why and can save anyway or cancel.
+ */
+async function onHand(id, mode) {
+    const c = ctx();
+    const s = settings();
+    const finding = c.chatMetadata?.[STATE_KEY]?.audit?.findings?.find((f) => f.id === id);
+    if (!finding?.hand) return toastr.warning('That fact cannot be edited by hand', 'Canonkeeper');
+    if (running) return toastr.warning('Wait for the run to finish', 'Canonkeeper');
+    const profile = profileOf(s.auditProfileId) ?? profileOf(s.detectProfileId) ?? profileOf(s.profileId);
+    if (!profile) return toastr.warning('Pick a connection profile in Extensions → Canonkeeper first, so the change can be checked', 'Canonkeeper');
+    let edit;
+    try {
+        if (mode === 'pick') {
+            const answer = await askPerson(c, 'input', `Which message supports this fact?\n\n"${finding.hand.text}"\n\nMessage numbers, like 12 or 12-15, as shown in the chat:`, finding.hand.cites.join(', '));
+            if (answer == null) return;
+            edit = { messages: parseMessageList(answer) };
+        } else {
+            const answer = await askPerson(c, 'input', `Reword this fact, as the messages it cites (${finding.hand.cites.map((m) => `#${m}`).join(', ')}) say it:`, finding.hand.text);
+            if (answer == null) return;
+            edit = { text: answer };
+        }
+    } catch (err) {
+        return toastr.error(err.message, 'Canonkeeper', { timeOut: 15000 });
+    }
+    running = true;
+    const toast = toastr.info('Checking your change against the messages…', 'Canonkeeper', { timeOut: 0, extendedTimeOut: 0 });
+    try {
+        const checked = await checkFinding(stFor(c, s, profile), id, edit);
+        toastr.clear(toast);
+        if (!checked.ok) {
+            const go = await askPerson(c, 'confirm', `The messages do not support this (${checked.verdict}).\n\n${checked.why}\n\nSave it anyway? The audit will keep flagging it.`);
+            if (!go) return;
+        }
+        const { writes } = await acceptFinding({ ...stFor(c, s, { id: '', name: '' }), generate: null }, id, 'hand', edit, checked);
+        toastr.success(writes.length ? writes.join('\n') : 'No change was needed', 'Canonkeeper: fact saved');
+    } catch (err) {
+        toastr.error(err.message, 'Canonkeeper', { timeOut: 15000 });
+    } finally {
+        toastr.clear(toast);
+        running = false;
+        renderStatus();
+    }
+}
+
 /** Accept or dismiss one finding of the review queue. */
 async function onFinding(action, id, choice) {
+    if (action === 'hand') return onHand(id, choice);
     const c = ctx();
     if (running) return toastr.warning('Wait for the run to finish', 'Canonkeeper');
     running = true;
@@ -459,6 +517,7 @@ function auditStatus(a, current) {
     const line = (f) => {
         const buttons = [
             f.recite && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="recite" data-finding="${esc(f.id)}" title="${esc(f.recite.says)}">Accept: ${esc(f.recite.says)}</div>` : '',
+            f.hand && current ? `<div class="menu_button" data-action="hand" data-fix="pick" data-finding="${esc(f.id)}" title="Choose the message this fact comes from">Pick the message myself</div><div class="menu_button" data-action="hand" data-fix="edit" data-finding="${esc(f.id)}" title="Reword this fact">Edit this fact</div>` : '',
             f.fix && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="fix" data-finding="${esc(f.id)}" title="${esc(f.fix.says)}">Accept: ${esc(f.fix.says)}</div>` : '',
             `<div class="menu_button" data-action="dismiss" data-finding="${esc(f.id)}">Dismiss</div>`,
         ].join('');
@@ -467,7 +526,7 @@ function auditStatus(a, current) {
     const parts = [`<div>${head}: ${esc(a.summary ?? '')}</div>`];
     if (a.books?.length) parts.push(`<div><small>Also read for key clashes: ${esc(a.books.map((b) => b.name).join(', '))}</small></div>`);
     if (a.error) parts.push(`<div class="canonkeeper-error">Last audit failed: ${esc(a.error.message)}</div>`);
-    if (!current && open.some((f) => f.fix || f.recite)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
+    if (!current && open.some((f) => f.fix || f.recite || f.hand)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
     if (open.length) parts.push(`<details open><summary>Review queue (${open.length})</summary>${open.map(line).join('')}</details>`);
     const dismissed = a.findings.filter((f) => f.dismissed);
     if (dismissed.length) parts.push(`<details><summary>Dismissed (${dismissed.length})</summary><pre>${esc(dismissed.map((f) => `${f.check}: ${f.message}`).join('\n'))}</pre></details>`);
