@@ -435,13 +435,14 @@ export function batches(messages, claims, budget) {
  * `verdicts` maps a claim id to { verdict, why }. A batch whose reply is
  * unusable after one retry leaves its claims unchecked; the audit goes on.
  */
-export async function verifyClaims({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT }) {
+export async function verifyClaims({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT, onBatch = null }) {
     const budget = planBudget({ contextTokens, maxOutputTokens: Math.min(maxOutputTokens, VERIFY_OUTPUT) });
     const { batches: groups, tooBig } = batches(messages, claims, budget);
     const verdicts = {};
     const unchecked = tooBig.map((c) => ({ id: c.id, reason: 'its cited messages do not fit the window' }));
     let calls = 0;
     const counted = (req) => (calls++, generate(req));
+    onBatch?.(Object.keys(verdicts).length + unchecked.length);
     for (const group of groups) {
         let got;
         try {
@@ -449,12 +450,14 @@ export async function verifyClaims({ messages, claims, generate, contextTokens, 
         } catch (err) {
             if (!(err instanceof ModelOutputError)) throw err;
             unchecked.push(...group.map((c) => ({ id: c.id, reason: `no usable reply: ${err.message}` })));
+            onBatch?.(Object.keys(verdicts).length + unchecked.length);
             continue;
         }
         group.forEach((c, i) => {
             if (got.has(i)) verdicts[c.id] = got.get(i);
             else unchecked.push({ id: c.id, reason: 'the reply gave no verdict' });
         });
+        onBatch?.(Object.keys(verdicts).length + unchecked.length);
     }
     return { verdicts, unchecked, calls };
 }
@@ -567,7 +570,7 @@ function claimFindings(claims, stale, verdicts, held, recites = {}) {
  * Returns the audit record: { version, at, fingerprint, bookHash, findings,
  * claims: { total, checked, stale, unchecked }, verdicts, verdictKeys, recites, reused, calls, dismissed }.
  */
-export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date() }) {
+export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date(), onProgress = null }) {
     if (!messages.length) throw new Error('empty transcript');
     const technical = technicalPass({ book, ledger, messages, foreign });
     const { claims, stale } = claimsOf({ book, ledger, messages });
@@ -584,10 +587,14 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
     const verdicts = Object.fromEntries(kept.map((c) => [c.id, previous.verdicts[c.id]]));
     for (const c of kept) keys[c.id] = previous.verdictKeys[c.id];
     const todo = claims.filter((c) => !verdicts[c.id]);
+    // The technical pass is done before any model call: hand it over now,
+    // then report how many claims are settled as the batches come back.
+    const dismissedEarly = (previous?.dismissed ?? []).filter((id) => typeof id === 'string');
+    onProgress?.({ phase: 'technical', findings: technical.map((f) => (dismissedEarly.includes(f.id) ? { ...f, dismissed: true } : f)), checked: kept.length, total: claims.length, pending: !!generate && todo.length > 0 });
     let unchecked = [];
     let calls = 0;
     if (generate) {
-        const out = await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens });
+        const out = await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens, onBatch: (n) => onProgress?.({ phase: 'claims', checked: kept.length + n, total: claims.length }) });
         Object.assign(verdicts, out.verdicts);
         for (const c of todo) if (out.verdicts[c.id]) keys[c.id] = { key: keyOf(c), profile: profile ?? null };
         ({ unchecked, calls } = out);

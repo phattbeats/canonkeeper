@@ -166,6 +166,8 @@ async function canon() {
 // --- The audit ------------------------------------------------------------------
 
 /** Runs the audit on the open chat. Writes nothing to the book; fixes wait in the status view. */
+let auditProgress = null;
+
 async function canonAudit(recheck = false) {
     const c = ctx();
     const s = settings();
@@ -183,7 +185,16 @@ async function canonAudit(recheck = false) {
     const toast = toastr.info(verify ? 'Auditing the lorebook and checking its claims…' : 'Auditing the lorebook…', 'Canonkeeper', { timeOut: 0, extendedTimeOut: 0 });
     try {
         const st = profile ? stFor(c, s, profile) : { ...stFor(c, s, { id: '', name: '' }), generate: null };
-        const { summary } = await runAudit(st, { verify, recheck });
+        const { summary } = await runAudit(st, {
+            verify,
+            recheck,
+            onProgress: (p) => {
+                if (p.phase === 'technical') auditProgress = { findings: p.findings, checked: p.checked, total: p.total, pending: p.pending };
+                else if (auditProgress) Object.assign(auditProgress, { checked: p.checked, total: p.total });
+                if (auditProgress?.pending) toast.find?.('.toast-message').text(`Checking claims: ${auditProgress.checked} of ${auditProgress.total} facts…`);
+                renderStatus('running');
+            },
+        });
         toastr.success(summary, 'Canonkeeper');
         return summary;
     } catch (err) {
@@ -192,6 +203,7 @@ async function canonAudit(recheck = false) {
     } finally {
         toastr.clear(toast);
         running = false;
+        auditProgress = null;
         renderStatus();
     }
 }
@@ -485,7 +497,8 @@ async function renderStatus(phase) {
     const bookName = state?.book;
     const bound = c.chatMetadata.world_info;
     const boundBook = bound ? await c.loadWorldInfo(bound) : null;
-    if (state?.audit) parts.push(auditStatus(state.audit, state.audit.book === bound && auditIsCurrent(state.audit, boundBook, c.chat)));
+    if (auditProgress) parts.push(auditStatus({ findings: auditProgress.findings, summary: auditProgress.pending ? `technical pass done; checked ${auditProgress.checked} of ${auditProgress.total} facts…` : 'technical pass done.' }, false, true));
+    else if (state?.audit) parts.push(auditStatus(state.audit, state.audit.book === bound && auditIsCurrent(state.audit, boundBook, c.chat)));
     if (bookName && bookName === bound) {
         const book = boundBook;
         const entries = Object.values(book?.entries ?? {}).filter((e) => e.canonkeeper).sort((a, b) => a.uid - b.uid);
@@ -510,7 +523,7 @@ async function renderStatus(phase) {
  * accept and a dismiss button. Nothing in it is applied until accepted, and
  * a fix can only be accepted while the audit still matches the book and chat.
  */
-function auditStatus(a, current) {
+function auditStatus(a, current, interim = false) {
     const head = `<b>Audit</b>${a.at ? ` ${esc(new Date(a.at).toLocaleString())}` : ''}`;
     if (!a.findings) return `<div>${head}: <span class="canonkeeper-error">failed: ${esc(a.error?.message)}</span></div>`;
     const open = a.findings.filter((f) => !f.dismissed);
@@ -519,14 +532,14 @@ function auditStatus(a, current) {
             f.recite && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="recite" data-finding="${esc(f.id)}" title="${esc(f.recite.says)}">Accept: ${esc(f.recite.says)}</div>` : '',
             f.hand && current ? `<div class="menu_button" data-action="hand" data-fix="pick" data-finding="${esc(f.id)}" title="Choose the message this fact comes from">Pick the message myself</div><div class="menu_button" data-action="hand" data-fix="edit" data-finding="${esc(f.id)}" title="Reword this fact">Edit this fact</div>` : '',
             f.fix && current ? `<div class="menu_button canonkeeper-fix" data-action="accept" data-fix="fix" data-finding="${esc(f.id)}" title="${esc(f.fix.says)}">Accept: ${esc(f.fix.says)}</div>` : '',
-            `<div class="menu_button" data-action="dismiss" data-finding="${esc(f.id)}">Dismiss</div>`,
+            interim ? '' : `<div class="menu_button" data-action="dismiss" data-finding="${esc(f.id)}">Dismiss</div>`,
         ].join('');
         return `<div class="canonkeeper-finding canonkeeper-${f.severity}" data-id="${esc(f.id)}"><span>${f.severity === 'error' ? '✖' : '⚠'} ${esc(f.check)}: ${esc(f.message)}</span>${f.held ? ` <small>(held: ${esc(f.held)})</small>` : ''}<div class="canonkeeper-row">${buttons}</div></div>`;
     };
     const parts = [`<div>${head}: ${esc(a.summary ?? '')}</div>`];
     if (a.books?.length) parts.push(`<div><small>Also read for key clashes: ${esc(a.books.map((b) => b.name).join(', '))}</small></div>`);
     if (a.error) parts.push(`<div class="canonkeeper-error">Last audit failed: ${esc(a.error.message)}</div>`);
-    if (!current && open.some((f) => f.fix || f.recite || f.hand)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
+    if (!current && !interim && open.some((f) => f.fix || f.recite || f.hand)) parts.push('<div class="canonkeeper-chunked">The book or the chat changed since this audit: audit again to accept a fix.</div>');
     if (open.length) parts.push(`<details open><summary>Review queue (${open.length})</summary>${open.map(line).join('')}</details>`);
     const dismissed = a.findings.filter((f) => f.dismissed);
     if (dismissed.length) parts.push(`<details><summary>Dismissed (${dismissed.length})</summary><pre>${esc(dismissed.map((f) => `${f.check}: ${f.message}`).join('\n'))}</pre></details>`);

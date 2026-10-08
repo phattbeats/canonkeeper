@@ -200,6 +200,27 @@ test('claims carry their cited messages; one whose message changed is stale, not
     assert.equal(of(record.findings, 'stale').length, 1);
 });
 
+test('the technical pass is handed over before any model call, then claim progress counts up', async () => {
+    const { book, ledger } = await built();
+    const { claims } = claimsOf({ book, ledger, messages });
+    const events = [];
+    let firstCall = null;
+    const generate = async (req) => {
+        firstCall ??= events.length;
+        return verdictsReply(claims.length);
+    };
+    const record = await audit({ book, ledger, messages, generate, contextTokens: CONTEXT, onProgress: (p) => events.push(p) });
+    assert.equal(events[0].phase, 'technical');
+    assert.ok(firstCall >= 1, 'the technical event came before the first model call');
+    assert.equal(events[0].total, claims.length);
+    assert.equal(events[0].checked, 0);
+    assert.deepEqual(events[0].findings.map((f) => f.id), record.findings.filter((f) => f.check !== 'claim' && f.check !== 'stale').map((f) => f.id));
+    const counts = events.slice(1).map((p) => p.checked);
+    assert.ok(counts.length >= 1);
+    assert.deepEqual(counts, [...counts].sort((a, b) => a - b));
+    assert.equal(counts.at(-1), record.claims.checked + record.claims.unchecked);
+});
+
 test('verdicts are read strictly; a claim with no usable verdict stays unchecked', () => {
     assert.throws(() => readVerdicts('no json here', 3), ModelOutputError);
     assert.throws(() => readVerdicts('{"verdicts": []}', 3), ModelOutputError);

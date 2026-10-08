@@ -329,7 +329,7 @@ function auditSummary(record, bookName) {
  * messages it cites; without, only the technical pass runs and earlier
  * verdicts carry over. Throws if the chat has no lorebook or is switched.
  */
-export async function runAudit(st, { verify = true, recheck = false } = {}) {
+export async function runAudit(st, { verify = true, recheck = false, onProgress = null } = {}) {
     const started = Date.now();
     const { lines, log } = runLog(st);
     const state = st.metadata[STATE_KEY] ?? {};
@@ -349,7 +349,7 @@ export async function runAudit(st, { verify = true, recheck = false } = {}) {
         log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
         const previous = state.audit?.book === bookName ? state.audit : null;
         const { books, foreign } = await otherBooks(st, bookName, log);
-        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck });
+        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck, onProgress });
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
         const summary = auditSummary(record, bookName);
         log(summary);
