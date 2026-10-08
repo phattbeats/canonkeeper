@@ -165,7 +165,7 @@ async function canon() {
 // --- The audit ------------------------------------------------------------------
 
 /** Runs the audit on the open chat. Writes nothing to the book; fixes wait in the status view. */
-async function canonAudit() {
+async function canonAudit(recheck = false) {
     const c = ctx();
     const s = settings();
     const profile = profileOf(s.auditProfileId) ?? profileOf(s.detectProfileId) ?? profileOf(s.profileId);
@@ -182,7 +182,7 @@ async function canonAudit() {
     const toast = toastr.info(verify ? 'Auditing the lorebook and checking its claims…' : 'Auditing the lorebook…', 'Canonkeeper', { timeOut: 0, extendedTimeOut: 0 });
     try {
         const st = profile ? stFor(c, s, profile) : { ...stFor(c, s, { id: '', name: '' }), generate: null };
-        const { summary } = await runAudit(st, { verify });
+        const { summary } = await runAudit(st, { verify, recheck });
         toastr.success(summary, 'Canonkeeper');
         return summary;
     } catch (err) {
@@ -352,6 +352,7 @@ const html = `
       <div class="canonkeeper-row">
         <div id="canonkeeper_run" class="menu_button">Run /canon</div>
         <div id="canonkeeper_audit" class="menu_button">Audit</div>
+        <div id="canonkeeper_audit_recheck" class="menu_button" title="Ask the model about every claim again, even those whose claim and cited messages haven't changed">Re-check everything</div>
       </div>
       <label class="checkbox_label" for="canonkeeper_audit_verify">
         <input id="canonkeeper_audit_verify" type="checkbox">
@@ -604,6 +605,7 @@ function mountSettings() {
     }
     $('#canonkeeper_run').on('click', () => canon().catch(() => {}));
     $('#canonkeeper_audit').on('click', () => canonAudit().catch(() => {}));
+    $('#canonkeeper_audit_recheck').on('click', () => canonAudit(true).catch(() => {}));
     $('#canonkeeper_audit_verify').prop('checked', !!s.auditVerify).on('change', function () {
         s.auditVerify = !!this.checked;
         c.saveSettingsDebounced();
@@ -636,8 +638,11 @@ function registerCommand() {
     }));
     c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
         name: 'canon-audit',
-        callback: async () => canonAudit(),
+        callback: async (args) => canonAudit(String(args?.recheck) === 'true'),
         returns: 'a one-line summary of the audit',
+        namedArgumentList: [
+            c.SlashCommandNamedArgument.fromProps({ name: 'recheck', description: 'ask the model about every claim again (default: keep verdicts whose claim and cited messages are unchanged)', typeList: [c.ARGUMENT_TYPE.BOOLEAN], defaultValue: 'false' }),
+        ],
         helpString: 'Canonkeeper: audits this chat\'s lorebook. Finds keys claimed by two entries, entries with no keys, keys that fire on nearly everything, settings that stop an entry firing, and deleted entries; optionally checks every claim against the messages it cites. Writes nothing: fixes wait in Extensions → Canonkeeper for you to accept.',
     }));
     c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({

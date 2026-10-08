@@ -318,7 +318,7 @@ function auditSummary(record, bookName) {
     const errors = open.filter((f) => f.severity === 'error').length;
     const fixes = open.filter((f) => f.fix).length;
     const c = record.claims;
-    const claims = c.total ? ` ${c.checked} of ${c.total} claims verified${c.stale ? `, ${c.stale} stale` : ''}.` : '';
+    const claims = c.total ? ` ${c.checked} of ${c.total} claims verified${record.reused ? ` (${record.reused} kept from the last audit)` : ''}${c.stale ? `, ${c.stale} stale` : ''}.` : '';
     return `Canonkeeper audit of '${bookName}': ${open.length ? `${open.length} finding${open.length === 1 ? '' : 's'} (${errors} error${errors === 1 ? '' : 's'}), ${fixes} with a fix to review` : 'nothing found'}.${claims}`;
 }
 
@@ -329,7 +329,7 @@ function auditSummary(record, bookName) {
  * messages it cites; without, only the technical pass runs and earlier
  * verdicts carry over. Throws if the chat has no lorebook or is switched.
  */
-export async function runAudit(st, { verify = true } = {}) {
+export async function runAudit(st, { verify = true, recheck = false } = {}) {
     const started = Date.now();
     const { lines, log } = runLog(st);
     const state = st.metadata[STATE_KEY] ?? {};
@@ -349,7 +349,7 @@ export async function runAudit(st, { verify = true } = {}) {
         log(`auditing '${bookName}': ${Object.keys(book.entries).length} entries, ${messages.length} messages; ledger ${ledger ? `revision ${ledger.revision}` : 'none'}; ${verify ? 'verifying claims' : 'technical pass only'}`);
         const previous = state.audit?.book === bookName ? state.audit : null;
         const { books, foreign } = await otherBooks(st, bookName, log);
-        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous });
+        const record = await audit({ book, ledger, messages, foreign, generate: verify ? st.generate : null, contextTokens: st.settings.contextTokens, maxOutputTokens: st.settings.maxOutputTokens, previous, profile: st.profile?.id ?? null, recheck });
         if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the audit; nothing was kept');
         const summary = auditSummary(record, bookName);
         log(summary);

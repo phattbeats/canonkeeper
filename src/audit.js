@@ -23,7 +23,7 @@
 import { planBudget, estimateTokens } from './budget.js';
 import { renderTranscript } from './prompt.js';
 import { extractJson, ModelOutputError } from './parse.js';
-import { fingerprint, hashOf } from './fingerprint.js';
+import { fingerprint, hashOf, messageHash } from './fingerprint.js';
 import { entryKeyRegex } from './match.js';
 import { MAX_FIRE_FRACTION } from './compile.js';
 import { align } from './align.js';
@@ -483,20 +483,33 @@ function claimFindings(claims, stale, verdicts, held) {
  * unchecked. Findings a human dismissed in `previous` stay dismissed.
  *
  * Returns the audit record: { version, at, fingerprint, bookHash, findings,
- * claims: { total, checked, stale, unchecked }, verdicts, calls, dismissed }.
+ * claims: { total, checked, stale, unchecked }, verdicts, verdictKeys, reused, calls, dismissed }.
  */
-export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, now = new Date() }) {
+export async function audit({ book, ledger = null, messages, foreign = [], generate = null, contextTokens, maxOutputTokens, previous = null, profile = null, recheck = false, now = new Date() }) {
     if (!messages.length) throw new Error('empty transcript');
     const technical = technicalPass({ book, ledger, messages, foreign });
     const { claims, stale } = claimsOf({ book, ledger, messages });
     const live = new Set(claims.map((c) => c.id));
-    let verdicts = Object.fromEntries(Object.entries(previous?.verdicts ?? {}).filter(([id]) => live.has(id)));
+    // A verdict is kept while its claim, the messages it cites and the checker
+    // profile are as they were. `recheck` throws them all away.
+    const keyOf = (c) => hashOf({ claim: c.id, cites: c.ids.map((id) => messageHash(messages[id])) });
+    const keys = {};
+    const reusable = (c) => {
+        const old = previous?.verdictKeys?.[c.id];
+        return !recheck && previous?.verdicts?.[c.id] && old?.key === keyOf(c) && (!generate || (old.profile ?? null) === (profile ?? null));
+    };
+    const kept = claims.filter(reusable);
+    const verdicts = Object.fromEntries(kept.map((c) => [c.id, previous.verdicts[c.id]]));
+    for (const c of kept) keys[c.id] = previous.verdictKeys[c.id];
+    const todo = claims.filter((c) => !verdicts[c.id]);
     let unchecked = [];
     let calls = 0;
     if (generate) {
-        const out = await verifyClaims({ messages, claims, generate, contextTokens, maxOutputTokens });
-        ({ verdicts, unchecked, calls } = out);
-    } else unchecked = claims.filter((c) => !verdicts[c.id]).map((c) => ({ id: c.id, reason: 'not verified in this audit' }));
+        const out = await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens });
+        Object.assign(verdicts, out.verdicts);
+        for (const c of todo) if (out.verdicts[c.id]) keys[c.id] = { key: keyOf(c), profile: profile ?? null };
+        ({ unchecked, calls } = out);
+    } else unchecked = todo.map((c) => ({ id: c.id, reason: 'not verified in this audit' }));
     const held = new Map(heldEntries(book, ledger?.written ?? {}).map((h) => [h.entry.uid, h.reason]));
     const dismissed = (previous?.dismissed ?? []).filter((id) => typeof id === 'string');
     const findings = [...technical, ...claimFindings(claims, stale, verdicts, held)].map((f) => (dismissed.includes(f.id) ? { ...f, dismissed: true } : f));
@@ -508,6 +521,8 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
         findings,
         claims: { total: claims.length + stale.length, checked: Object.keys(verdicts).length, stale: stale.length, unchecked: unchecked.length },
         verdicts,
+        verdictKeys: keys,
+        reused: kept.length,
         unchecked,
         calls,
         dismissed,

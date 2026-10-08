@@ -5,7 +5,7 @@
 //   canonkeeper pin   <dir> <entry title>          mark an entry as human-pinned in <dir>/book.json
 //   canonkeeper rerun <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>]
 //   canonkeeper update <transcript.jsonl> --run <dir> [--out <dir>] [--model <id> | --replay <replies.json>] [--context <tokens>] [--dry-run]
-//   canonkeeper audit <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--no-verify]
+//   canonkeeper audit <transcript.jsonl> --run <dir> [--model <id> | --replay <replies.json>] [--context <tokens>] [--no-verify] [--recheck]
 //   canonkeeper accept <transcript.jsonl> --run <dir> <finding id>
 //   canonkeeper dismiss <dir> <finding id>
 //
@@ -53,6 +53,7 @@ function parseArgs(argv) {
         else if (a === '--output-share') args.outputShare = Number(argv[++i]);
         else if (a === '--dry-run') args.dryRun = true;
         else if (a === '--no-verify') args.noVerify = true;
+        else if (a === '--recheck') args.recheck = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
     }
@@ -155,6 +156,8 @@ async function main() {
             generate: args.noVerify ? null : recording(model(args), replies),
             contextTokens: args.context,
             previous,
+            profile: args.model ?? null,
+            recheck: !!args.recheck,
         });
         if (replies.length) writeJson(join(args.dir, 'audit-replies.json'), replies);
         writeJson(join(args.dir, 'audit.json'), record);

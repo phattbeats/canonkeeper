@@ -309,6 +309,46 @@ test('a dismissed finding stays dismissed in later audits, and verdicts carry ov
     assert.equal(second.claims.checked, claims.length);
 });
 
+test('a second audit of an unchanged book makes no claim-check call and keeps every verdict', async () => {
+    const { book, ledger } = await built();
+    const { claims } = claimsOf({ book, ledger, messages });
+    let calls = 0;
+    const gen = async () => (calls++, verdictsReply(claims.length, { 3: 'unsupported', 7: 'contradicted' }));
+    const first = await audit({ book, ledger, messages, generate: gen, contextTokens: CONTEXT, profile: 'haiku' });
+    const made = calls;
+    assert.ok(made > 0);
+    const second = await audit({ book, ledger, messages, generate: gen, contextTokens: CONTEXT, profile: 'haiku', previous: first });
+    assert.equal(calls, made, 'no further call');
+    assert.equal(second.calls, 0);
+    assert.equal(second.reused, claims.length);
+    assert.deepEqual(second.verdicts, first.verdicts);
+    // A different checker, or a re-check, asks again.
+    const other = await audit({ book, ledger, messages, generate: gen, contextTokens: CONTEXT, profile: 'sonnet', previous: first });
+    assert.ok(other.calls > 0);
+    const forced = await audit({ book, ledger, messages, generate: gen, contextTokens: CONTEXT, profile: 'haiku', previous: first, recheck: true });
+    assert.equal(forced.reused, 0);
+    assert.ok(forced.calls > 0);
+});
+
+test('editing one cited message re-checks only the claims citing it', async () => {
+    const { book } = await built();
+    const { claims } = claimsOf({ book, messages });
+    const asked = [];
+    const gen = async ({ user }) => {
+        const n = (user.match(/^C\d+ · /gm) ?? []).length;
+        asked.push(n);
+        return verdictsReply(n);
+    };
+    const first = await audit({ book, messages, generate: gen, contextTokens: CONTEXT });
+    asked.length = 0;
+    const edited = messages.map((m) => (m.id === 40 ? { ...m, text: `${m.text} Later, rain.` } : m));
+    const citing = claims.filter((c) => c.ids.includes(40));
+    assert.ok(citing.length > 0 && citing.length < claims.length);
+    const second = await audit({ book, messages: edited, generate: gen, contextTokens: CONTEXT, previous: first });
+    assert.equal(asked.reduce((a, b) => a + b, 0), citing.length);
+    assert.equal(second.reused, claims.length - citing.length);
+});
+
 // ── in SillyTavern ──────────────────────────────────────────────────────────
 
 const chat = readFileSync(join(STORY, 'transcript.jsonl'), 'utf8').split('\n').filter((l) => l.trim()).slice(1).map((l) => JSON.parse(l));
