@@ -248,7 +248,8 @@ async function main() {
 
     // One working profile, one pointing at a proxy that is not there.
     await claudeProfile(page, 'claude-sonnet-5', GOOD);
-    await page.evaluate((u) => { $('#openai_reverse_proxy').val(u).trigger('input'); $('#save_proxy').trigger('click'); }, DEAD_URL);
+    // Its own proxy preset: editing the shared one would kill the good profile too.
+    await page.evaluate((u) => { $('#openai_reverse_proxy_name').val('dead-proxy').trigger('input'); $('#openai_reverse_proxy').val(u).trigger('input'); $('#save_proxy').trigger('click'); }, DEAD_URL);
     await command(page, `/profile-create ${DEAD}`);
     await sleep(3000);
     await openDrawer(page, 'extensions-settings-button');
