@@ -31,7 +31,7 @@ const CHAT = 'Saltwind';
 const RUN_TIMEOUT = 20 * 60 * 1000;
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const OUT = path.join(env('OUT_DIR', path.join(REPO, '.run', 'live-hand')), stamp);
+const OUT = path.join(env('OUT_DIR', path.join(REPO, '.run', 'live-health')), stamp);
 fs.mkdirSync(OUT, { recursive: true });
 const logFile = fs.createWriteStream(path.join(OUT, 'health.log'));
 const log = (...parts) => {
@@ -189,6 +189,8 @@ const badges = (page) => page.evaluate(() => ({
     head: [...document.querySelectorAll('#canonkeeper_settings .canonkeeper-badge-head')].map((b) => `${b.dataset.level}:${b.textContent}`),
     toasts: [...document.querySelectorAll('#toast-container .toast-error')].map((t) => t.innerText.replace(/\s+/g, ' ')),
 }));
+/** A message into the chat the way a script would, not typed: a typed command makes SillyTavern announce a generation it then drops. */
+const send = (page, text) => page.evaluate((t) => SillyTavern.getContext().executeSlashCommandsWithOptions(`/send ${t}`), text);
 const stateNow = () => readChat().then(stateOf);
 /** Waits for the DOM (not the server) to show `ok(badges)`. */
 async function waitDom(page, label, ok, ms = 90000) {
@@ -272,7 +274,7 @@ async function main() {
     await page.fill('#canonkeeper_cadence', '4');
     await page.press('#canonkeeper_cadence', 'Tab');
     await page.evaluate(() => $('#canonkeeper_detect_profile').trigger('change'));
-    await command(page, '/send Tamsin looks up from the chart.');
+    await send(page, 'Tamsin looks up from the chart.');
     const dead = await waitDom(page, 'dead detector', (b) => b.wand.length && b.toasts.some((t) => /could not be reached|failed|refused|Scene detection/i.test(t)), 120000);
     check('dead detector: badge and sticky toast within one cadence, read from the DOM', !!dead, JSON.stringify(dead?.b));
     await shot(page, '02-dead-detector.png');
@@ -286,12 +288,12 @@ async function main() {
 
     // 3. Four more messages: a retry, the same failure, no second toast.
     const before = (await badges(page)).toasts.length;
-    for (let i = 0; i < 4; i++) { await command(page, `/send Another line ${i}.`); await sleep(1500); }
+    for (let i = 0; i < 4; i++) { await send(page, `Another line ${i}.`); await sleep(1500); }
     await sleep(15000);
     const retried = await stateNow();
-    log(`[server] after the retry: ${retried.health.consecutive} failures in a row, ${retried.live.detectCalls} detection calls`);
+    log(`[server] after the retry: ${retried?.health?.consecutive} failures in a row, ${retried.live.detectCalls} detection calls`);
     check('a retry of the same failure adds no toast', (await badges(page)).toasts.length === before, `${before} -> ${(await badges(page)).toasts.length}`);
-    check('...but it is counted', retried.health.consecutive >= 2, String(retried.health.consecutive));
+    check('...but it is counted', retried?.health?.consecutive >= 2, String(retried?.health?.consecutive));
     await openDrawer(page, 'extensions-settings-button');
     await page.locator('#canonkeeper_status').scrollIntoViewIfNeeded();
     const statusText = await page.locator('#canonkeeper_status').innerText();
@@ -311,7 +313,7 @@ async function main() {
     const drawer = await page.$eval('#canonkeeper_settings .inline-drawer-content', (el) => getComputedStyle(el).display !== 'none');
     if (!drawer) await page.click('#canonkeeper_settings .inline-drawer-toggle');
     await page.selectOption('#canonkeeper_detect_profile', { label: GOOD });
-    for (let i = 0; i < 4; i++) { await command(page, `/send After the fix ${i}.`); await sleep(1500); }
+    for (let i = 0; i < 4; i++) { await send(page, `After the fix ${i}.`); await sleep(1500); }
     const fixed = await waitDom(page, 'after the fix', (b) => b.wand.length === 0 && b.toasts.length === 0, 180000);
     check('after the profile is fixed the badge and the toast clear on the next success', !!fixed, JSON.stringify(fixed?.b));
     const s2 = await stateNow();

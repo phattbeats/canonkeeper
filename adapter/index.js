@@ -4,7 +4,7 @@
 // is installed. The run itself is run.js; this file only wires it up.
 
 import { parseMessageList } from '../src/audit.js';
-import { severity, unhealthy, KINDS } from '../src/health.js';
+import { severity, unhealthy, stalled, KINDS } from '../src/health.js';
 import { runCanon, runLive, noteHealth, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, checkFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
@@ -14,6 +14,12 @@ const log = (line) => console.info(`[Canonkeeper] ${line}`);
 let running = false;
 // Set while SillyTavern is writing a reply: live mode waits for it to finish.
 let generating = false;
+let generatingSince = 0;
+// SillyTavern emits GENERATION_STARTED even when a typed slash command
+// aborts the generation, and then never ends it: the flag would hold live
+// mode off for good. Past this a flag with no reply streaming is stale.
+const GENERATING_STALE_MS = 60 * 1000;
+const isGenerating = () => generating && Date.now() - generatingSince < GENERATING_STALE_MS;
 let liveTimer = null;
 
 /** The one settings object, filled in place: handlers hold on to it. */
@@ -393,6 +399,21 @@ function reportHealth(events) {
     renderStatus();
 }
 
+/**
+ * Live mode stalled? Checked on every tick, before anything can hold the tick
+ * off: a run that is blocked must not hide that messages are piling up.
+ */
+function checkStall(c, s) {
+    const live = c.chatMetadata?.[STATE_KEY]?.live;
+    const waiting = live?.hashes ? c.chat.length - live.hashes.length : 0;
+    const before = JSON.stringify(c.chatMetadata?.[STATE_KEY]?.health);
+    noteHealth({ metadata: c.chatMetadata, notify: notifyHealth }, [], { is: stalled(live, c.chat.length, Number(s.cadence)), waiting });
+    if (JSON.stringify(c.chatMetadata?.[STATE_KEY]?.health) !== before) {
+        c.saveMetadata();
+        renderStatus();
+    }
+}
+
 function tickFailed(err) {
     log(`live tick failed: ${err.message}`);
     reportHealth([{ where: 'tick', kind: 'tick', ok: false, error: err }]);
@@ -415,7 +436,8 @@ async function liveTick() {
     const c = ctx();
     const s = settings();
     if (!s.live || !c.chatId || !c.chat?.length) return;
-    if (running || generating || c.streamingProcessor) return scheduleLive(3000);
+    checkStall(c, s);
+    if (running || isGenerating() || c.streamingProcessor) return scheduleLive(3000);
     const writer = profileOf(s.profileId);
     if (!writer) {
         log('live mode is on but no connection profile is picked');
@@ -824,7 +846,10 @@ jQuery(async () => {
     // Live mode looks at the chat after anything that changes it. A reply
     // being written is waited out; a message is judged once it's complete.
     c.eventSource.on(c.eventTypes.GENERATION_STARTED, (type, options, dryRun) => {
-        if (!dryRun) generating = true;
+        if (!dryRun) {
+            generating = true;
+            generatingSince = Date.now();
+        }
     });
     for (const event of ['GENERATION_ENDED', 'GENERATION_STOPPED']) {
         c.eventSource.on(c.eventTypes[event], () => {
