@@ -4,7 +4,8 @@
 // is installed. The run itself is run.js; this file only wires it up.
 
 import { parseMessageList } from '../src/audit.js';
-import { runCanon, runLive, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, checkFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
+import { severity, unhealthy, KINDS } from '../src/health.js';
+import { runCanon, runLive, noteHealth, runAudit, runClip, recallInputs, recallSession, RECALL_PROMPT, acceptFinding, checkFinding, dismissFinding, auditIsCurrent, profileGenerate, DEFAULT_SETTINGS, STATE_KEY } from './run.js';
 
 const NAME = 'canonkeeper';
 const ctx = () => SillyTavern.getContext();
@@ -28,10 +29,10 @@ function profileOf(id) {
 }
 
 /** The model behind a connection profile, as the core's generate. */
-function generateFor(c, profile) {
+function generateFor(c, profile, timeoutMs = 0) {
     const send = c.ConnectionManagerRequestService.sendRequest.bind(c.ConnectionManagerRequestService);
     const api = c.CONNECT_API_MAP[profile.api]?.selected;
-    return profileGenerate({ send, extract: (json) => c.extractMessageFromData(json, api), profileId: profile.id, log });
+    return profileGenerate({ send, extract: (json) => c.extractMessageFromData(json, api), profileId: profile.id, log, timeoutMs });
 }
 
 /** A slash command's piped result, or '' if it fails. */
@@ -376,7 +377,35 @@ globalThis.canonkeeperRecall = async (chat, contextSize, abort, type) => recallS
 function scheduleLive(delay = 1000) {
     if (!settings().live) return;
     clearTimeout(liveTimer);
-    liveTimer = setTimeout(() => liveTick().catch((err) => log(`live tick failed: ${err.message}`)), delay);
+    liveTimer = setTimeout(() => liveTick().catch(tickFailed), delay);
+}
+
+// A model that doesn't answer in this long has failed, whatever it is doing.
+const DETECT_TIMEOUT_MS = 120000;
+const WRITE_TIMEOUT_MS = 600000;
+
+/** Health events outside runLive's reach: the person must hear of these too. */
+function reportHealth(events) {
+    const c = ctx();
+    if (!c.chatId) return;
+    noteHealth({ metadata: c.chatMetadata, notify: notifyHealth }, events);
+    c.saveMetadata();
+    renderStatus();
+}
+
+function tickFailed(err) {
+    log(`live tick failed: ${err.message}`);
+    reportHealth([{ where: 'tick', kind: 'tick', ok: false, error: err }]);
+}
+
+/**
+ * Sticky toasts, one per new failure (src/health.js decides which are new):
+ * they stay until dismissed, because nobody is watching a set-and-forget run.
+ */
+function notifyHealth(entries) {
+    for (const e of entries) {
+        toastr.error(`${e.cause} ${e.fix}`, `Canonkeeper: ${KINDS[e.kind] ?? e.kind}`, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false });
+    }
 }
 
 async function liveTick() {
@@ -385,14 +414,16 @@ async function liveTick() {
     if (!s.live || !c.chatId || !c.chat?.length) return;
     if (running || generating || c.streamingProcessor) return scheduleLive(3000);
     const writer = profileOf(s.profileId);
-    if (!writer) return log('live mode is on but no connection profile is picked');
+    if (!writer) {
+        log('live mode is on but no connection profile is picked');
+        return reportHealth([{ where: 'profile', kind: 'profile', ok: false, error: 'no connection profile is picked' }]);
+    }
     const detector = profileOf(s.detectProfileId) ?? writer;
     running = true;
     let cycle = null;
     try {
         const auditor = s.auditVerify ? profileOf(s.auditProfileId) ?? detector : null;
-        cycle = await runLive({ ...stFor(c, s, writer), detectGenerate: generateFor(c, detector), auditGenerate: auditor && generateFor(c, auditor), auditProfile: auditor });
-        if (cycle?.update && !cycle.update.ok) toastr.warning(`Live update failed: ${cycle.update.error}`, 'Canonkeeper');
+        cycle = await runLive({ ...stFor(c, s, writer), generate: generateFor(c, writer, WRITE_TIMEOUT_MS), detectGenerate: generateFor(c, detector, DETECT_TIMEOUT_MS), detectProfile: detector, auditGenerate: auditor && generateFor(c, auditor, DETECT_TIMEOUT_MS), auditProfile: auditor, notify: notifyHealth });
     } finally {
         running = false;
         renderStatus();
@@ -473,6 +504,7 @@ async function renderStatus(phase) {
     const c = ctx();
     if (!c.chatId) {
         el.innerHTML = '<i>No chat open.</i>';
+        renderBadge();
         return;
     }
     const state = c.chatMetadata?.[STATE_KEY];
@@ -492,6 +524,7 @@ async function renderStatus(phase) {
         if (last.review?.length) parts.push(`<details><summary>For review (${last.review.length})</summary><pre>${esc(last.review.map((r) => (typeof r === 'string' ? r : `${r.name ?? r.key ?? ''}: ${r.reason ?? JSON.stringify(r)}`)).join('\n'))}</pre></details>`);
         if (last.log?.length) parts.push(`<details><summary>Run log</summary><pre>${esc(last.log.join('\n'))}</pre></details>`);
     }
+    if (state?.health?.history?.length) parts.push(healthStatus(state.health));
     if (settings().live || state?.live) parts.push(liveStatus(state?.live));
     if (settings().recall || recallState.last) parts.push(recallStatus());
     if (state?.clips?.length) parts.push(clipStatus(state.clips));
@@ -512,6 +545,7 @@ async function renderStatus(phase) {
     // pin doesn't fold the list away.
     const open = new Set([...el.querySelectorAll('details[open] > summary')].map((x) => x.textContent.split(' ')[0]));
     el.innerHTML = parts.join('');
+    renderBadge();
     el.querySelectorAll('details > summary').forEach((x) => {
         if (open.has(x.textContent.split(' ')[0])) x.parentElement.open = true;
     });
@@ -564,6 +598,33 @@ function recallStatus() {
 function clipStatus(clips) {
     const line = (x) => `${new Date(x.at).toLocaleString()} #${x.message}: ${x.ok ? `${x.title} (keys ${x.keys.join(', ')})${x.dropped?.length ? `; dropped ${x.dropped.map((d) => `${d.key}: ${d.reason}`).join('; ')}` : ''}` : `failed: ${x.error}`}`;
     return `<details><summary>Clips (${clips.length})</summary><pre>${esc(clips.slice().reverse().map(line).join('\n'))}</pre></details>`;
+}
+
+/**
+ * The badge: a red or amber dot on the wand menu and a line in the panel
+ * header while anything is failing. It reads the chat's saved health, so it
+ * is there after a reload, and goes at the next success.
+ */
+function renderBadge() {
+    const health = ctx().chatId ? ctx().chatMetadata?.[STATE_KEY]?.health : null;
+    const level = unhealthy(health) ? severity(health) : null;
+    const worst = level && Object.values(health.failing).at(-1);
+    const title = level ? `Canonkeeper is not working: ${worst.cause} ${worst.fix}` : '';
+    $('.canonkeeper-badge').remove();
+    if (!level) return;
+    const dot = (cls) => `<span class="canonkeeper-badge canonkeeper-badge-${level} ${cls}" data-level="${level}" title="${esc(title)}"></span>`;
+    $('#extensionsMenuButton').append(dot('canonkeeper-badge-wand'));
+    $('#canonkeeper_settings .inline-drawer-header b').first().after(`<span class="canonkeeper-badge canonkeeper-badge-${level} canonkeeper-badge-head" data-level="${level}" title="${esc(title)}">${level === 'red' ? 'not working' : 'needs attention'}</span>`);
+}
+
+/** The last failures with their plain-language cause and the fix, newest first. */
+function healthStatus(health) {
+    const failing = Object.values(health.failing ?? {});
+    const line = (f) => `<div class="canonkeeper-failure"><b>${esc(new Date(f.at).toLocaleString())} ${esc(KINDS[f.kind] ?? f.kind)}</b>: ${esc(f.cause)}<br><i>Fix: ${esc(f.fix)}</i>${f.error ? `<br><small>${esc(f.error)}</small>` : ''}</div>`;
+    const head = failing.length
+        ? `<div class="canonkeeper-error"><b>Not working</b> (${esc(health.consecutive)} failure${health.consecutive === 1 ? '' : 's'} in a row): ${esc(failing.map((f) => KINDS[f.kind] ?? f.kind).join(', '))}</div>`
+        : `<div class="canonkeeper-ok">Healthy${health.lastSuccess ? `: last success ${esc(new Date(health.lastSuccess.at).toLocaleString())}` : ''}</div>`;
+    return `${head}<details${failing.length ? ' open' : ''}><summary>Failures (${health.history.length})</summary>${health.history.slice().reverse().map(line).join('')}</details>`;
 }
 
 /** The live state store, for the status view: counts, scene starts, recent cycles. */

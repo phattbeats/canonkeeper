@@ -16,6 +16,7 @@ import { seed, rewind, detect, updateTarget, logCycle, isLive, DEFAULT_CADENCE }
 import { audit, accept, checkHand, dismiss, openFindings } from '../src/audit.js';
 import { clip } from '../src/clip.js';
 import { recall, DEFAULT_RECALL } from '../src/recall.js';
+import { record as recordHealth, emptyHealth, noteStall, classify, stalled, TimeoutError } from '../src/health.js';
 
 export const STATE_KEY = 'canonkeeper';
 export const STATE_VERSION = 1;
@@ -67,12 +68,15 @@ export function truncated(json) {
  * reply into text. A cut-off reply comes back empty, so the core counts it as
  * a bad reply rather than parsing the front half of a lorebook.
  */
-export function profileGenerate({ send, extract, profileId, log = () => {} }) {
+export function profileGenerate({ send, extract, profileId, log = () => {}, timeoutMs = 0 }) {
     return async ({ system, user, maxTokens }) => {
         const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
         log(`model call: ~${Math.ceil((system.length + user.length) / 3)} prompt tokens, up to ${maxTokens} out`);
         const started = Date.now();
-        const json = await send(profileId, messages, maxTokens, { stream: false, extractData: false, includePreset: false, includeInstruct: true });
+        const call = send(profileId, messages, maxTokens, { stream: false, extractData: false, includePreset: false, includeInstruct: true });
+        let timer;
+        // The request itself can't be cancelled; the run just stops waiting for it.
+        const json = await (timeoutMs ? Promise.race([call, new Promise((_, reject) => { timer = setTimeout(() => reject(new TimeoutError(Math.round(timeoutMs / 1000))), timeoutMs); })]) : call).finally(() => clearTimeout(timer));
         const seconds = ((Date.now() - started) / 1000).toFixed(1);
         if (truncated(json)) {
             log(`model reply cut off at the output limit after ${seconds}s; counted as a bad reply`);
@@ -246,6 +250,24 @@ export async function runCanon(st) {
 }
 
 /**
+ * Folds health events into the chat's state store (src/health.js) and hands
+ * the ones to be told about to `st.notify`. Nothing is saved here: the caller
+ * saves the metadata.
+ */
+export function noteHealth(st, events, stall) {
+    const state = st.metadata[STATE_KEY] ?? {};
+    let { health, notify } = recordHealth(state.health, events);
+    if (stall) {
+        const s = noteStall(health, stall.is, { waiting: stall.waiting });
+        health = s.health;
+        notify = [...notify, ...s.notify];
+    }
+    if (state.health || JSON.stringify(health) !== JSON.stringify(emptyHealth())) st.metadata[STATE_KEY] = { ...st.metadata[STATE_KEY], health };
+    if (notify.length) st.notify?.(notify);
+    return health;
+}
+
+/**
  * One live-mode tick (src/live.js), run whenever the chat changes. `st` is as
  * for runCanon, plus `detectGenerate` (the detector's model) and, in
  * `settings`, `cadence` and `detectContextTokens`.
@@ -271,10 +293,13 @@ export async function runLive(st) {
         log(`messages from ${rewound} changed: judging them again`);
     }
 
+    // A tick that gets this far has a profile and ran: those two are well.
+    const events = [{ where: 'profile', kind: 'profile', ok: true }, { where: 'tick', kind: 'tick', ok: true }];
     const d = await detect({ live, messages, generate: st.detectGenerate, cadence, contextTokens: st.settings.detectContextTokens });
     live = d.live;
     if (d.detection) {
         cycle.detection = d.detection;
+        events.push({ where: 'detector', kind: classify('detector', d.detection.error), ok: d.detection.ok, error: d.detection.error, profile: st.detectProfile?.name });
         log(d.detection.ok
             ? `detection: judged ${d.detection.judged.join('-')}, scene starts ${d.detection.starts.join(', ') || 'none'}`
             : `detection failed: ${d.detection.error}; trying again after ${cadence} more messages`);
@@ -292,6 +317,7 @@ export async function runLive(st) {
             const { failedTarget, updateRetryAt, ...rest } = live;
             live = { ...rest, updates: live.updates + 1 };
             cycle.update = { ok: true, through: target - 1, calls: result.calls, writes: plan.length, revision: result.ledger.revision };
+            events.push({ where: 'update', kind: 'update', ok: true });
             extra.book = bookName;
             extra.ledger = result.ledger;
             extra.lastRun = { at: new Date(started).toISOString(), ms: Date.now() - started, profile: st.profile ?? null, trigger: 'live', ...runRecord(result, plan, summary), log: lines };
@@ -300,9 +326,24 @@ export async function runLive(st) {
             log(`update failed: ${err.message}`);
             live = { ...live, failedTarget: target, updateRetryAt: messages.length + cadence };
             cycle.update = { ok: false, through: target - 1, error: err.message };
+            events.push({ where: 'update', kind: classify('update', err), ok: false, error: err, profile: st.profile?.name });
         }
     }
-    if (!fresh && rewound == null && !cycle.detection && !cycle.update) return null;
+    // Stalled: messages are piling up unjudged. Checked on every tick, even
+    // one that made no call, since a failing detector is retried only later.
+    const stall = { is: stalled(live, messages.length, cadence), waiting: messages.length - live.hashes.length };
+    if (!fresh && rewound == null && !cycle.detection && !cycle.update) {
+        if (st.currentChatId() !== st.chatId) return null;
+        const before = JSON.stringify(state.health);
+        st.metadata[STATE_KEY] = { ...state, live };
+        noteHealth(st, events, stall);
+        if (JSON.stringify(st.metadata[STATE_KEY].health) === before) {
+            st.metadata[STATE_KEY] = state;
+            return null;
+        }
+        await st.saveMetadata();
+        return null;
+    }
     if (st.currentChatId() !== st.chatId) return null;
 
     // A book just written is checked at once: the technical pass always (no
@@ -314,15 +355,18 @@ export async function runLive(st) {
         try {
             const { record } = await runAudit(st, { verify: !!st.auditGenerate, generate: st.auditGenerate, profile: st.auditProfile ?? null });
             cycle.audit = { ok: true, findings: openFindings(record).length, checked: record.claims.checked, reused: record.reused, calls: record.calls };
+            events.push({ where: 'audit', kind: 'audit', ok: true });
         } catch (err) {
             log(`audit failed: ${err.message}`);
             if (st.currentChatId() !== st.chatId) return null;
             cycle.audit = { ok: false, error: err.message };
+            events.push({ where: 'audit', kind: classify('audit', err), ok: false, error: err, profile: st.auditProfile?.name });
         }
         extra.audit = st.metadata[STATE_KEY].audit;
     }
     cycle.ms = Date.now() - started;
     st.metadata[STATE_KEY] = { ...state, ...extra, version: STATE_VERSION, live: logCycle(live, cycle) };
+    noteHealth(st, events, stall);
     await st.saveMetadata();
     return cycle;
 }
