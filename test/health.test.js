@@ -233,6 +233,7 @@ test('the history keeps the last ten, and a healthy chat has no health record', 
 test('explain: plain causes and fixes for the failures people meet', () => {
     assert.match(explain('update', '401 Unauthorized', 'Sonnet').fix, /API key/);
     assert.match(explain('update', 'fetch failed').cause, /could not be reached/);
+    assert.match(explain('detector', 'API request failed', 'Dead').fix, /URL and API key/);
     assert.match(explain('update', 'model: claude-x not found').fix, /pick a model/);
     assert.match(explain('detector', 'reply needs a \'starts\' array').fix, /capable model/);
     assert.match(explain('audit', 'something odd').cause, /something odd/);

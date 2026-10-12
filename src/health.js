@@ -63,14 +63,14 @@ export function explain(kind, error, profileName = '') {
         : /\b429\b|rate.?limit|quota|insufficient|credit|billing/i.test(msg) ? 'limit'
         : /\b(404)\b|not found|no such model|model.*(does not exist|unknown)/i.test(msg) ? 'model'
         : /\b(500|502|503|504|529)\b|overloaded|bad gateway|unavailable/i.test(msg) ? 'server'
-        : /ECONNREFUSED|ENOTFOUND|fetch failed|network|failed to fetch|socket/i.test(msg) ? 'network'
+        : /API request failed|request failed|ECONNREFUSED|ENOTFOUND|fetch failed|network|failed to fetch|socket/i.test(msg) ? 'network'
         : /reply|JSON|parse|empty|cut off|needs a/i.test(msg) && kind === 'detector' ? 'reply'
         : null;
     if (status === 'auth') return { cause: `${cap(who)} was refused (${msg}).`, fix: `Check ${who}'s API key in Connection Profiles.` };
     if (status === 'limit') return { cause: `${cap(who)} hit a rate or spending limit (${msg}).`, fix: 'Wait, or add credit / raise the limit with the provider, or pick another profile.' };
     if (status === 'model') return { cause: `${cap(who)} names a model the provider does not have (${msg}).`, fix: `Edit ${who} and pick a model that exists.` };
     if (status === 'server') return { cause: `The provider for ${who} is failing on its side (${msg}).`, fix: 'Usually passes by itself; Canonkeeper tries again. If it keeps happening, pick another profile.' };
-    if (status === 'network') return { cause: `${cap(who)} could not be reached (${msg}).`, fix: 'Check the profile\'s URL and that the server or proxy is running.' };
+    if (status === 'network') return { cause: `${cap(who)} could not be reached or refused the request (${msg}).`, fix: 'Check the profile\'s URL and API key, and that the server or proxy is running.' };
     if (status === 'reply') return { cause: `The model answered, but not in a form Canonkeeper can read (${msg}).`, fix: 'Pick a more capable model for scene detection.' };
     return { cause: `${KINDS[kind] ?? kind} failed: ${msg || 'no reason given'}.`, fix: 'Run /canon, or open the Run log in the status view for the details.' };
 }

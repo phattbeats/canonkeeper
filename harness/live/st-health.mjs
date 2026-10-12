@@ -275,24 +275,26 @@ async function main() {
     await page.press('#canonkeeper_cadence', 'Tab');
     await page.evaluate(() => $('#canonkeeper_detect_profile').trigger('change'));
     await send(page, 'Tamsin looks up from the chart.');
-    const dead = await waitDom(page, 'dead detector', (b) => b.wand.length && b.toasts.some((t) => /could not be reached|failed|refused|Scene detection/i.test(t)), 120000);
+    const dead = await waitDom(page, 'dead detector', (b) => b.wand.length && b.toasts.some((t) => /Scene detection/i.test(t)), 120000);
     check('dead detector: badge and sticky toast within one cadence, read from the DOM', !!dead, JSON.stringify(dead?.b));
     await shot(page, '02-dead-detector.png');
     const stuck = await badges(page);
     await sleep(25000);
     const later = await badges(page);
-    check('the toast is sticky: still there 25s later (the default ones go in 15)', later.toasts.length >= 1 && later.toasts.length === stuck.toasts.length, `${stuck.toasts.length} then ${later.toasts.length}`);
+    check('the toast is sticky: still there 25s later (the default ones go in 15)', later.toasts.some((t) => /Scene detection/.test(t)), `${stuck.toasts.length} then ${later.toasts.length}`);
     const s1 = await stateNow();
     log(`[server] health: ${JSON.stringify(s1?.health?.failing)}`);
     check('the failure is in the chat file, with cause and fix', !!s1?.health?.failing?.detector?.fix, JSON.stringify(s1?.health?.failing?.detector));
 
+    const detToasts = (b) => b.toasts.filter((t) => /Scene detection/.test(t)).length;
     // 3. Four more messages: a retry, the same failure, no second toast.
-    const before = (await badges(page)).toasts.length;
+    const before = detToasts(await badges(page));
     for (let i = 0; i < 4; i++) { await send(page, `Another line ${i}.`); await sleep(1500); }
     await sleep(15000);
     const retried = await stateNow();
     log(`[server] after the retry: ${retried?.health?.consecutive} failures in a row, ${retried.live.detectCalls} detection calls`);
-    check('a retry of the same failure adds no toast', (await badges(page)).toasts.length === before, `${before} -> ${(await badges(page)).toasts.length}`);
+    check('a retry of the same failure adds no scene-detection toast (the stall warning is a new kind)', detToasts(await badges(page)) === before, `${before} -> ${detToasts(await badges(page))}`);
+    check('the stall warning is raised once messages pile up', /stalled/i.test((await badges(page)).toasts.join(' ')));
     check('...but it is counted', retried?.health?.consecutive >= 2, String(retried?.health?.consecutive));
     await openDrawer(page, 'extensions-settings-button');
     await page.locator('#canonkeeper_status').scrollIntoViewIfNeeded();
@@ -305,6 +307,11 @@ async function main() {
     await page.waitForSelector('#canonkeeper_settings', { timeout: 60000, state: 'attached' });
     await sleep(5000);
     await dismissDialogs(page);
+    await page.evaluate(async ({ CHAR, CHAT }) => {
+        const c = SillyTavern.getContext();
+        await c.selectCharacterById(c.characters.findIndex((x) => x.name === CHAR));
+        await c.openCharacterChat(CHAT);
+    }, { CHAR, CHAT });
     const reloaded = await waitDom(page, 'after reload', (b) => b.wand.length, 30000);
     check('the badge survives a reload', !!reloaded, JSON.stringify(reloaded?.b));
 
