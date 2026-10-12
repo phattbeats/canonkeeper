@@ -402,9 +402,12 @@ function tickFailed(err) {
  * Sticky toasts, one per new failure (src/health.js decides which are new):
  * they stay until dismissed, because nobody is watching a set-and-forget run.
  */
+const healthToasts = new Map();
+
 function notifyHealth(entries) {
     for (const e of entries) {
-        toastr.error(`${e.cause} ${e.fix}`, `Canonkeeper: ${KINDS[e.kind] ?? e.kind}`, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false });
+        if (healthToasts.has(e.step)) toastr.clear(healthToasts.get(e.step));
+        healthToasts.set(e.step, toastr.error(`${e.cause} ${e.fix}`, `Canonkeeper: ${KINDS[e.kind] ?? e.kind}`, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false }));
     }
 }
 
@@ -610,6 +613,13 @@ function renderBadge() {
     const level = unhealthy(health) ? severity(health) : null;
     const worst = level && Object.values(health.failing).at(-1);
     const title = level ? `Canonkeeper is not working: ${worst.cause} ${worst.fix}` : '';
+    // A notice goes when its failure does.
+    for (const [step, toast] of healthToasts) {
+        if (!health?.failing?.[step]) {
+            toastr.clear(toast);
+            healthToasts.delete(step);
+        }
+    }
     $('.canonkeeper-badge').remove();
     if (!level) return;
     const dot = (cls) => `<span class="canonkeeper-badge canonkeeper-badge-${level} ${cls}" data-level="${level}" title="${esc(title)}"></span>`;

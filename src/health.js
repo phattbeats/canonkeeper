@@ -145,7 +145,7 @@ export function noteStall(health, isStalled, { waiting = 0, at = new Date().toIS
     if (!isStalled) return { health: h.stalledNotified ? { ...h, stalledNotified: false, failing: omit(h.failing, 'stalled') } : h, notify: [] };
     if (h.stalledNotified) return { health: h, notify: [] };
     const what = { cause: `Live mode has stalled: ${waiting} messages are waiting and none has been judged successfully.`, fix: 'Look at the failures listed in the status view; the first one is usually the reason.', error: '' };
-    const entry = { kind: 'stalled', at, ...what };
+    const entry = { kind: 'stalled', step: 'stalled', at, ...what };
     return {
         health: { ...h, stalledNotified: true, failing: { ...h.failing, stalled: { at, last: at, count: 1, ...what } }, lastFailure: entry, history: [...h.history, entry].slice(-HISTORY_KEPT) },
         notify: [entry],
