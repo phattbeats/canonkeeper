@@ -548,6 +548,23 @@ test('a re-cite search is kept with the verdict, and redone on a re-check', asyn
     assert.ok(other.length > 0);
 });
 
+test('a search that found nothing sends no message set twice as the chat grows, only sets a new message brings', async () => {
+    const { book, ledger } = await miscited();
+    const truth = { ...TRUTH, [MISCITED.text]: [] };
+    const tried = [];
+    const first = await audit({ book, ledger, messages, generate: checker(truth, tried), contextTokens: CONTEXT, profile: 'a' });
+    const say = (text) => ({ id: messages.length, name: 'Narrator', isUser: false, text });
+    const grown = [...messages, say('The rain stops. Nobody speaks for a while.')];
+    const seen = [];
+    const later = await audit({ book, ledger, messages: grown, generate: checker(truth, seen), contextTokens: CONTEXT, previous: first, profile: 'a' });
+    assert.equal(seen.filter((c) => c.text === MISCITED.text).length, 0, 'the same candidates were not tried again');
+    const more = [];
+    await audit({ book, ledger, messages: [...messages, say(MISCITED.text)], generate: checker(truth, more), contextTokens: CONTEXT, previous: later, profile: 'a' });
+    const sets = (seen) => seen.filter((c) => c.text === MISCITED.text).map((c) => c.cites.join());
+    assert.ok(sets(more).length > 0, 'a message that might support it starts a new search');
+    assert.ok(sets(more).every((s) => s.split(',').includes(String(messages.length)) || !sets(tried).includes(s)), `only sets with the new message are sent: ${sets(more)}`);
+});
+
 test('an entry the user edited gets no re-cite, as it gets no drop', async () => {
     const { book, ledger } = await miscited();
     titled(book, MISCITED.entity).content += ' Edited by hand.';

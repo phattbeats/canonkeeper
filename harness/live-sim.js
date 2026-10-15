@@ -7,6 +7,15 @@
 //   node harness/live-sim.js <transcript.jsonl> --out <dir>
 //        [--detect-model <id>] [--model <id>] | [--replay <dir>]
 //        [--cadence 4] [--detect-context 32000] [--context 200000] [--detect-only]
+//        [--audit-model <id>] [--plant-at <n> [--plant new|steal]] [--dismiss]
+//
+// --audit-model turns on the claim check of the live audit (without it, each
+// update gets the technical pass only). --plant-at puts a key collision in the
+// book after message n, as a human would: `new` is two hand-made entries on
+// one new key, `steal` is one hand-made entry on a key of an entry Canonkeeper
+// wrote. --dismiss dismisses the planted collision once it is queued, to show
+// it stays dismissed. The claim lines each audit call was shown go to
+// audit-calls.json, and the plant and every audit after it to plant.json.
 //
 // --detect-only measures the detector alone: the writer is a stub that finds
 // nothing, so the updates still fire but make no real call.
@@ -25,6 +34,27 @@ import { update } from '../src/update.js';
 import { claudeCli } from '../src/models/claude-cli.js';
 import { replay, recording } from '../src/models/replay.js';
 import { DEFAULT_CADENCE } from '../src/live.js';
+import { dismissFinding } from '../adapter/run.js';
+import { claimsOf } from '../src/audit.js';
+
+const PLANTED = [900, 901];
+
+/** A key collision, made by hand in the book: see --plant. */
+function plantCollision(book, how) {
+    const entries = Object.values(book.entries);
+    if (how === 'steal') {
+        const victim = entries.find((e) => e.canonkeeper && !e.constant && (e.key ?? []).length);
+        if (!victim) return null;
+        const key = victim.key[0];
+        book.entries[PLANTED[0]] = { uid: PLANTED[0], key: [key], keysecondary: [], comment: `Planted ${PLANTED[0]}`, content: 'A human wrote this.', constant: false, disable: false };
+        return { how, key, uids: [PLANTED[0], victim.uid], victim: victim.uid };
+    }
+    for (const uid of PLANTED) book.entries[uid] = { uid, key: ['Zedwin Varrocks'], keysecondary: [], comment: `Planted ${uid}`, content: 'A human wrote this.', constant: false, disable: false };
+    return { how: 'new', key: 'Zedwin Varrocks', uids: [...PLANTED] };
+}
+
+/** The claim lines (title · cites: text) an audit request showed the model. */
+const claimLines = (user) => [...user.matchAll(/^C\d+ · (.*)$/gm)].map((m) => m[1]);
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const writeJson = (p, v) => writeFileSync(p, JSON.stringify(v, null, 2) + '\n');
@@ -41,6 +71,10 @@ function parseArgs(argv) {
         else if (a === '--detect-context') args.detectContext = Number(argv[++i]);
         else if (a === '--context') args.context = Number(argv[++i]);
         else if (a === '--detect-only') args.detectOnly = true;
+        else if (a === '--audit-model') args.auditModel = argv[++i];
+        else if (a === '--plant-at') args.plantAt = Number(argv[++i]);
+        else if (a === '--plant') args.plant = argv[++i];
+        else if (a === '--dismiss') args.dismiss = true;
         else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
         else args._.push(a);
     }
@@ -86,24 +120,67 @@ async function main() {
         : args.replay ? replay(readJson(join(args.replay, 'write-replies.json'))) : claudeCli({ model: args.model });
     const settings = { contextTokens: args.context, maxOutputTokens: 64000, cadence: args.cadence, detectContextTokens: args.detectContext };
     const st = fakeST({ generate: recording(writeModel, writeReplies), detectGenerate: recording(detectModel, detectReplies), settings });
+    const auditCalls = [];
+    if (args.auditModel) {
+        const auditModel = args.replay ? replay(readJson(join(args.replay, 'audit-replies.json'))) : claudeCli({ model: args.auditModel });
+        const auditReplies = [];
+        const rec = recording(auditModel, auditReplies);
+        st.auditGenerate = async (req) => {
+            // A line citing what its fact cites is a claim check; any other is a re-cite try.
+            const state = st.metadata[STATE_KEY];
+            const messages = st.chat.map((m, id) => ({ id, name: String(m.name ?? ''), isUser: !!m.is_user, text: m.mes }));
+            const own = new Set(claimsOf({ book: st.books[state.book], ledger: state.ledger, messages }).claims.map((c) => `${c.title} · cites ${c.ids.map((id) => `#${id}`).join(', ')}: ${c.text}`));
+            const lines = claimLines(req.user);
+            const call = { at: st.chat.length, lines, kinds: lines.map((l) => (own.has(l) ? 'verify' : 'recite')) };
+            auditCalls.push(call);
+            const t = Date.now();
+            try {
+                return await rec(req);
+            } finally {
+                call.ms = Date.now() - t;
+                writeJson(join(args.out, 'audit-replies.json'), auditReplies);
+            }
+        };
+        st.auditProfile = { id: `sim-audit:${args.auditModel}`, name: 'live-sim audit', model: args.auditModel };
+    }
+    const plant = args.plantAt ? { at: null, wanted: args.plantAt, audits: [] } : null;
 
     const started = Date.now();
     try {
         for (const message of chat) {
             st.chat.push(message);
             const cycle = await runLive(st);
+            const bookName = st.metadata[STATE_KEY]?.book;
+            if (plant && plant.at == null && st.chat.length >= plant.wanted && bookName && st.books[bookName]) {
+                Object.assign(plant, plantCollision(st.books[bookName], args.plant ?? 'new'), { at: st.chat.length });
+                console.log(`[${String(st.chat.length).padStart(3)}] planted a '${plant.how}' collision on '${plant.key}'`);
+            } else if (plant?.at != null && cycle?.audit) {
+                const a = st.metadata[STATE_KEY].audit;
+                const f = a.findings.find((x) => x.check === 'collision' && plant.uids.every((u) => x.uids.includes(u)));
+                const book = st.books[bookName];
+                plant.audits.push({ at: st.chat.length, audit: cycle.audit, finding: f ? { id: f.id, dismissed: !!f.dismissed, message: f.message } : null, plantedIntact: plant.uids.filter((u) => u >= 900).every((u) => book.entries[u]?.key?.includes(plant.key)), victimKeeps: plant.victim == null ? null : !!book.entries[plant.victim]?.key?.includes(plant.key), victimExists: plant.victim == null ? null : !!book.entries[plant.victim] });
+                if (args.dismiss && f && !f.dismissed && !plant.dismissedAt) {
+                    await dismissFinding(st, f.id);
+                    plant.dismissedAt = st.chat.length;
+                    console.log(`[${String(st.chat.length).padStart(3)}] dismissed ${f.id}`);
+                }
+            }
             if (!cycle) continue;
             const d = cycle.detection;
             const u = cycle.update;
             const said = [
                 d && (d.ok ? `detect ${d.judged.join('-')} -> ${d.starts.join(',') || 'none'}` : `detect FAILED: ${d.error}`),
                 u && (u.ok ? `update through ${u.through}: ${u.writes} writes, ${u.calls} call(s)` : `update FAILED: ${u.error}`),
+                cycle.audit && (cycle.audit.ok ? `audit: ${cycle.audit.findings} open, ${cycle.audit.checked} checked, ${cycle.audit.reused} reused, ${cycle.audit.calls} call(s)` : `audit FAILED: ${cycle.audit.error}`),
             ].filter(Boolean);
             console.log(`[${String(st.chat.length).padStart(3)}] ${said.join('; ') || (cycle.seeded != null ? 'seeded' : 'rewound')}`);
         }
     } finally {
         writeJson(join(args.out, 'detect-replies.json'), detectReplies);
         writeJson(join(args.out, 'write-replies.json'), writeReplies);
+        writeJson(join(args.out, 'audit-calls.json'), auditCalls);
+        if (plant) writeJson(join(args.out, 'plant.json'), plant);
+        if (st.metadata[STATE_KEY]?.audit) writeJson(join(args.out, 'audit.json'), st.metadata[STATE_KEY].audit);
     }
 
     const state = st.metadata[STATE_KEY];

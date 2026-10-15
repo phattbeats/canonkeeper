@@ -501,27 +501,39 @@ export function recitePool(messages, claim, limit = RECITE_SINGLES) {
  * best few messages alone, then the best three together. Each candidate is
  * a claim check like any other, and the smallest set the checker calls
  * supported wins; no set that passes means no suggestion (`null`), which is
- * what a false fact gets. Returns { found, calls }: `found` maps a claim id
- * to the message ids, or null.
+ * what a false fact gets. `known` maps a claim id to sets judged before, as
+ * { ids, at, ok } (`at`: the hashes of those messages then): a set whose
+ * messages are as they were is not sent again. Returns { found, calls,
+ * tries }: `found` maps a claim id to the message ids, or null; `tries` to
+ * every set now judged, for `known` next time.
  */
-export async function suggestSources({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT }) {
+export async function suggestSources({ messages, claims, generate, contextTokens, maxOutputTokens = VERIFY_OUTPUT, known = {} }) {
+    const hashes = (ids) => ids.map((id) => messageHash(messages[id]));
     const tries = [];
     for (const c of claims) {
         const pool = recitePool(messages, c);
         const sets = pool.map((id) => [id]);
         if (pool.length > 1) sets.push(pool.slice(0, RECITE_TOGETHER).sort((a, b) => a - b));
-        sets.forEach((ids, n) => tries.push({ claim: c, ids, id: `${c.id}~${n}`, uid: c.uid, title: c.title, text: c.text }));
+        sets.forEach((ids, n) => {
+            const at = hashes(ids);
+            const before = (known[c.id] ?? []).find((k) => k.ids.join() === ids.join() && k.at.join() === at.join());
+            tries.push({ claim: c, ids, at, ok: before?.ok, id: `${c.id}~${n}`, uid: c.uid, title: c.title, text: c.text });
+        });
     }
     const found = Object.fromEntries(claims.map((c) => [c.id, null]));
-    if (!tries.length) return { found, calls: 0 };
-    const out = await verifyClaims({ messages, claims: tries, generate, contextTokens, maxOutputTokens });
+    const judged = Object.fromEntries(claims.map((c) => [c.id, []]));
+    const todo = tries.filter((t) => t.ok === undefined);
+    const out = todo.length ? await verifyClaims({ messages, claims: todo, generate, contextTokens, maxOutputTokens }) : { verdicts: {}, calls: 0 };
+    for (const t of todo) if (out.verdicts[t.id]) t.ok = out.verdicts[t.id].verdict === 'supported';
     // Tries are in best-first order; the smallest passing set wins, the earlier on a tie.
     for (const t of tries) {
-        if (out.verdicts[t.id]?.verdict !== 'supported') continue;
+        if (t.ok === undefined) continue; // no verdict: tried again next time
+        judged[t.claim.id].push({ ids: t.ids, at: t.at, ok: t.ok });
+        if (!t.ok) continue;
         const now = found[t.claim.id];
         if (!now || t.ids.length < now.length) found[t.claim.id] = t.ids;
     }
-    return { found, calls: out.calls };
+    return { found, calls: out.calls, tries: judged };
 }
 
 /** Findings from claim verdicts. Only a fact in an entry Canonkeeper still owns can be dropped. */
@@ -604,28 +616,32 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
     // Re-cites: for an unsupported fact in an entry Canonkeeper owns, the
     // messages that do support it. A search is kept while the claim, the
     // messages it cites, the checker profile and the messages it found are as
-    // they were (a search that found nothing, while the chat is as it was).
+    // they were. A search that found nothing is run again, as a chat that
+    // grows may now hold the support, but sends only the message sets it has
+    // not judged as they are (a record from before sets were kept is reused
+    // while the chat is as it was).
     const recites = {};
     const asked = claims.filter((c) => verdicts[c.id]?.verdict === 'unsupported' && !held.has(c.uid));
     const sameChat = previous?.fingerprint === fingerprint(messages);
-    const reusableRecite = (c) => {
+    const oldRecite = (c) => {
         const old = previous?.recites?.[c.id];
-        if (recheck || !old || old.key !== keyOf(c) || (generate && (old.profile ?? null) !== (profile ?? null))) return null;
-        const intact = old.ids ? old.ids.every((id, i) => id < messages.length && messageHash(messages[id]) === old.at[i]) : sameChat;
-        return intact ? old : null;
+        return !recheck && old && old.key === keyOf(c) && (!generate || (old.profile ?? null) === (profile ?? null)) ? old : null;
     };
     for (const c of asked) {
-        const old = reusableRecite(c);
-        if (old) recites[c.id] = old;
+        const old = oldRecite(c);
+        if (!old) continue;
+        if (old.ids ? old.ids.every((id, i) => id < messages.length && messageHash(messages[id]) === old.at[i]) : !old.tries && sameChat) recites[c.id] = old;
+        else if (!generate && old.tries) recites[c.id] = old;
     }
     const search = asked.filter((c) => !recites[c.id]);
     if (generate && search.length) {
         onProgress?.({ phase: 'recite', checked: claims.length, total: claims.length });
-        const out = await suggestSources({ messages, claims: search, generate, contextTokens, maxOutputTokens });
+        const known = Object.fromEntries(search.map((c) => [c.id, oldRecite(c)?.tries ?? []]));
+        const out = await suggestSources({ messages, claims: search, generate, contextTokens, maxOutputTokens, known });
         calls += out.calls;
         for (const c of search) {
             const ids = out.found[c.id];
-            recites[c.id] = { key: keyOf(c), profile: profile ?? null, ids, at: ids ? ids.map((id) => messageHash(messages[id])) : null };
+            recites[c.id] = { key: keyOf(c), profile: profile ?? null, ids, at: ids ? ids.map((id) => messageHash(messages[id])) : null, tries: out.tries[c.id] };
         }
     }
     const dismissed = (previous?.dismissed ?? []).filter((id) => typeof id === 'string');
