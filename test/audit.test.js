@@ -344,9 +344,9 @@ test('when a flagged fact gains a cite, its claim is checked again but no messag
     const fact = (b) => b.entities.find((e) => e.uid === f.uids[0]).facts.find((x) => x.text === MISCITED.text);
     const recited = structuredClone(ledger);
     fact(recited).messages = [...MISCITED.wrongly, 31];
-    const { book: rebuilt } = await update({ book, ledger: recited, messages, generate: noModel, contextTokens: CONTEXT });
+    const { book: rebuilt, ledger: next } = await update({ book, ledger: recited, messages, generate: noModel, contextTokens: CONTEXT });
     const later = [];
-    await audit({ book: rebuilt, ledger: recited, messages, generate: checker(truth, later), contextTokens: CONTEXT, previous: first, profile: 'a' });
+    await audit({ book: rebuilt, ledger: next, messages, generate: checker(truth, later), contextTokens: CONTEXT, previous: first, profile: 'a' });
     const own = (seen) => seen.filter((c) => c.text === MISCITED.text);
     assert.ok(own(later).some((c) => c.cites.join() === [...MISCITED.wrongly, 31].join()), 'the changed claim is checked again');
     const before = new Set(own(tried).map((c) => c.cites.join()));
