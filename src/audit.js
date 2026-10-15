@@ -636,7 +636,10 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
     const search = asked.filter((c) => !recites[c.id]);
     if (generate && search.length) {
         onProgress?.({ phase: 'recite', checked: claims.length, total: claims.length });
-        const known = Object.fromEntries(search.map((c) => [c.id, oldRecite(c)?.tries ?? []]));
+        // A tried set's verdict rests on the fact's words and those messages
+        // alone, so it holds even when the fact's own cites changed.
+        const sameChecker = (old) => !recheck && old && (old.profile ?? null) === (profile ?? null);
+        const known = Object.fromEntries(search.map((c) => [c.id, sameChecker(previous?.recites?.[c.id]) ? previous.recites[c.id].tries ?? [] : []]));
         const out = await suggestSources({ messages, claims: search, generate, contextTokens, maxOutputTokens, known });
         calls += out.calls;
         for (const c of search) {

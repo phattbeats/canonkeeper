@@ -335,6 +335,24 @@ test('a fix is refused once the book or an audited message has changed since the
     assert.equal(out.ledger.messageCount, messages.length, 'the book stays where it was: the new message is for the next update');
 });
 
+test('when a flagged fact gains a cite, its claim is checked again but no message set it was tried against is sent again', async () => {
+    const { book, ledger } = await miscited();
+    const truth = { ...TRUTH, [MISCITED.text]: [] };
+    const tried = [];
+    const first = await audit({ book, ledger, messages, generate: checker(truth, tried), contextTokens: CONTEXT, profile: 'a' });
+    const f = of(first.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    const fact = (b) => b.entities.find((e) => e.uid === f.uids[0]).facts.find((x) => x.text === MISCITED.text);
+    const recited = structuredClone(ledger);
+    fact(recited).messages = [...MISCITED.wrongly, 31];
+    const { book: rebuilt } = await update({ book, ledger: recited, messages, generate: noModel, contextTokens: CONTEXT });
+    const later = [];
+    await audit({ book: rebuilt, ledger: recited, messages, generate: checker(truth, later), contextTokens: CONTEXT, previous: first, profile: 'a' });
+    const own = (seen) => seen.filter((c) => c.text === MISCITED.text);
+    assert.ok(own(later).some((c) => c.cites.join() === [...MISCITED.wrongly, 31].join()), 'the changed claim is checked again');
+    const before = new Set(own(tried).map((c) => c.cites.join()));
+    assert.deepEqual(own(later).filter((c) => before.has(c.cites.join())).map((c) => c.cites.join()), [], 'no tried set again');
+});
+
 test('with the book behind the chat, a re-cite to a message it has not reached waits for the next update', async () => {
     const { book, ledger } = await miscited();
     const record = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT });
