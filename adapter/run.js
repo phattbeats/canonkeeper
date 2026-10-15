@@ -11,9 +11,9 @@
 
 import { update } from '../src/update.js';
 import { describe } from '../src/plan.js';
-import { hashOf, fingerprint } from '../src/fingerprint.js';
+import { hashOf } from '../src/fingerprint.js';
 import { seed, rewind, detect, updateTarget, logCycle, isLive, DEFAULT_CADENCE } from '../src/live.js';
-import { audit, accept, checkHand, dismiss, openFindings } from '../src/audit.js';
+import { audit, accept, checkHand, dismiss, openFindings, coveredPart } from '../src/audit.js';
 import { clip } from '../src/clip.js';
 import { recall, DEFAULT_RECALL } from '../src/recall.js';
 import { record as recordHealth, emptyHealth, noteStall, classify, stalled, TimeoutError } from '../src/health.js';
@@ -478,7 +478,7 @@ export async function checkFinding(st, id, edit) {
 /** Whether an audit record still describes this book and this chat: its fixes can be accepted. */
 export function auditIsCurrent(record, book, chat) {
     try {
-        return record.bookHash === hashOf(book?.entries ?? {}) && record.fingerprint === fingerprint(toMessages(chat));
+        return record.bookHash === hashOf(book?.entries ?? {}) && !!coveredPart(toMessages(chat), record.fingerprint, record.messageCount);
     } catch {
         return false;
     }

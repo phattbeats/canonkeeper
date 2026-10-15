@@ -318,7 +318,7 @@ test('accepting a drop-fact rewrites only that entry, with no model call', async
     assert.deepEqual(next.plan, []);
 });
 
-test('a fix is refused once the book or the chat has changed since the audit', async () => {
+test('a fix is refused once the book or an audited message has changed since the audit, not when the chat only grew', async () => {
     const { book, ledger } = await built();
     deleteEntry(book, plant.delete);
     const record = await audit({ book, ledger, messages, contextTokens: CONTEXT });
@@ -326,8 +326,24 @@ test('a fix is refused once the book or the chat has changed since the audit', a
     const changed = structuredClone(book);
     titled(changed, 'Pell').content = 'Edited.';
     await assert.rejects(accept({ book: changed, ledger, messages, record, id: f.id }), StaleAuditError);
-    const more = [...messages, { id: messages.length, name: 'Tamsin', text: 'One more line.' }];
-    await assert.rejects(accept({ book, ledger, messages: more, record, id: f.id }), StaleAuditError);
+    const edited = messages.map((m, i) => (i === 5 ? { ...m, text: `${m.text} Edited.` } : m));
+    await assert.rejects(accept({ book, ledger, messages: edited, record, id: f.id }), StaleAuditError);
+    // Live mode: new messages arrive after the audit, and the book is behind them.
+    const more = [...messages, { id: messages.length, name: 'Tamsin', isUser: true, text: 'One more line.' }];
+    const out = await accept({ book, ledger, messages: more, record, id: f.id });
+    assert.ok(Object.values(out.book.entries).some((e) => e.comment === plant.delete), 'restored');
+    assert.equal(out.ledger.messageCount, messages.length, 'the book stays where it was: the new message is for the next update');
+});
+
+test('with the book behind the chat, a re-cite to a message it has not reached waits for the next update', async () => {
+    const { book, ledger } = await miscited();
+    const record = await audit({ book, ledger, messages, generate: checker(TRUTH), contextTokens: CONTEXT });
+    const f = of(record.findings, 'claim').find((x) => x.claim === MISCITED.text);
+    const more = [...messages, { id: messages.length, name: 'Narrator', isUser: false, text: MISCITED.text }];
+    const out = await accept({ book, ledger, messages: more, record, id: f.id, choice: 'recite' });
+    assert.deepEqual(out.ledger.entities.find((e) => e.uid === f.uids[0]).facts.find((x) => x.text === MISCITED.text).messages, MISCITED.truly);
+    const ahead = { ...record, findings: record.findings.map((x) => (x.id === f.id ? { ...x, recite: { ...x.recite, messages: [messages.length] } } : x)) };
+    await assert.rejects(accept({ book, ledger, messages: more, record: ahead, id: f.id, choice: 'recite' }), /wait for the next update/);
 });
 
 test('a dismissed finding stays dismissed in later audits, and verdicts carry over', async () => {

@@ -650,6 +650,7 @@ export async function audit({ book, ledger = null, messages, foreign = [], gener
         version: AUDIT_VERSION,
         at: now.toISOString(),
         fingerprint: fingerprint(messages),
+        messageCount: messages.length,
         bookHash: hashOf(book.entries ?? {}),
         findings,
         claims: { total: claims.length + stale.length, checked: Object.keys(verdicts).length, stale: stale.length, unchecked: unchecked.length },
@@ -674,6 +675,18 @@ export function describeFinding(f) {
 // ── The review queue: accepting a fix ───────────────────────────────────────
 
 export class StaleAuditError extends Error {}
+
+/**
+ * The messages `fingerprint` and `count` were taken over, if the chat still
+ * begins with them unchanged (a chat that only grew, as in live mode), else
+ * null. With no count, the whole chat must be as it was.
+ */
+export function coveredPart(messages, fingerprinted, count) {
+    if (fingerprinted === fingerprint(messages)) return messages;
+    if (!Number.isInteger(count) || count > messages.length) return null;
+    const part = messages.slice(0, count);
+    return fingerprint(part) === fingerprinted ? part : null;
+}
 
 const noModel = async () => {
     throw new Error('accepting a fix makes no model call');
@@ -712,7 +725,8 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
     if (!f) throw new Error(`no finding '${id}' in the audit`);
     const fix = choice === 'recite' ? f.recite : choice === 'hand' ? f.hand : f.fix;
     if (!fix) throw new Error(`finding '${id}' has no ${choice === 'recite' ? 're-cite' : choice === 'hand' ? 'hand edit' : 'fix'} to accept`);
-    if (record.fingerprint !== fingerprint(messages) || record.bookHash !== hashOf(book.entries ?? {})) {
+    // New messages after the audited ones don't undo it; a changed one does.
+    if (!coveredPart(messages, record.fingerprint, record.messageCount) || record.bookHash !== hashOf(book.entries ?? {})) {
         throw new StaleAuditError('the chat or the book changed since the audit: audit again before accepting a fix');
     }
     if (fix.op === 'drop-key' || fix.op === 'set') {
@@ -728,7 +742,13 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
         return { book: out, ledger, writes, record };
     }
     if (!ledger) throw new Error('this fix needs the ledger');
-    if (ledger.fingerprint !== fingerprint(messages)) throw new StaleAuditError('the book is behind the chat: run /canon first');
+    // Live mode keeps the book a scene behind the chat: the fix is made on
+    // the messages the book was built from, and may cite none past them.
+    const built = coveredPart(messages, ledger.fingerprint, ledger.messageCount);
+    if (!built) throw new StaleAuditError('messages the book was built from have changed: run /canon first');
+    const reached = (ids) => {
+        if (ids.some((m) => m >= built.length)) throw new StaleAuditError(`the book has only reached message #${built.length - 1}: wait for the next update, or run /canon, then accept`);
+    };
     const next = structuredClone(ledger);
     let handed = null;
     if (fix.op === 'restore') {
@@ -748,9 +768,11 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
         const fact = e?.facts.find((x) => fold(x.text) === fold(fix.text));
         if (!fact) throw new Error(`the ledger has no such fact for uid ${fix.uid}`);
         if (!fix.messages.every((m) => Number.isInteger(m) && m >= 0 && m < messages.length)) throw new Error('the suggested messages are not in the chat');
+        reached(fix.messages);
         fact.messages = [...fix.messages].sort((a, b) => a - b);
     } else if (fix.op === 'hand') {
         const change = readEdit(f, messages, edit);
+        reached(change.messages);
         if (!checked?.verdict) throw new Error('a hand edit is saved only after the claim check has judged it (checkHand)');
         const e = next.entities.find((x) => x.uid === fix.uid);
         const fact = e?.facts.find((x) => fold(x.text) === fold(fix.text));
@@ -760,7 +782,7 @@ export async function accept({ book, ledger, messages, record, id, foreign = [],
         fact.messages = change.messages;
         handed = { change, checked };
     } else throw new Error(`unknown fix '${fix.op}'`);
-    const out = await update({ book, ledger: next, messages, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000, foreign });
+    const out = await update({ book, ledger: next, messages: built, generate: noModel, contextTokens: ledger.budget?.contextTokens ?? 200000, foreign });
     const writes = out.plan.map((o) => `${o.op} ${o.uid} '${o.title}'${o.fields ? ` (${o.fields.join(', ')})` : ''}`);
     return { book: out.book, ledger: out.ledger, writes, record: fix.op === 'recite' ? recited(record, messages, f, fix) : handed ? handedRecord(record, messages, f, handed) : record };
 }

@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runLive, runCanon, STATE_KEY } from '../adapter/run.js';
+import { runLive, runCanon, acceptFinding, auditIsCurrent, STATE_KEY } from '../adapter/run.js';
 import { buildDetectPrompt, readStarts, detectRange, seed, rewind, updateTarget } from '../src/live.js';
 import { ModelOutputError } from '../src/parse.js';
 import { fingerprint, messageHash } from '../src/fingerprint.js';
@@ -312,4 +312,22 @@ test('without an audit model the live audit is the technical pass only: no model
     const c = cycles.find((x) => x.update?.ok);
     assert.equal(c.audit.ok, true);
     assert.equal(c.audit.calls, 0);
+});
+
+test('mid-chat, with the book a scene behind, a fix from the live queue can be accepted after more messages', async () => {
+    // The checker calls every fact unsupported by its own message: each is flagged with a drop.
+    const auditGenerate = async ({ user }) => JSON.stringify({ claims: [...user.matchAll(/^C(\d+) · /gm)].map((m) => ({ id: `C${m[1]}`, why: 'no', verdict: 'unsupported' })) });
+    const st = fakeST({ detectGenerate: oracle(), generate: writer() });
+    st.auditGenerate = auditGenerate;
+    st.auditProfile = { id: 'aud' };
+    await play(st, answerKey.boundaries[1] + 3);
+    await play(st, st.chat.length + 2); // two more messages, no update
+    const state = st.metadata[STATE_KEY];
+    assert.ok(state.ledger.messageCount < st.chat.length, 'the book is behind the chat');
+    const book = st.books[state.book];
+    assert.ok(auditIsCurrent(state.audit, book, st.chat), 'the queue is still current');
+    const f = state.audit.findings.find((x) => x.check === 'claim' && x.fix?.op === 'drop-fact');
+    await acceptFinding({ ...st, generate: null }, f.id);
+    const entry = st.books[state.book].entries[String(f.uids[0])];
+    assert.ok(!entry || !entry.content.includes(f.claim), 'the fact is gone from the book');
 });
