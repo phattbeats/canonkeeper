@@ -21,14 +21,17 @@ export function split(reply) {
         scenes: data.scenes.map(({ quotes, ...s }) => ({ ...s, facts: s.facts.slice(0, 1) })),
     };
     const scenes = data.scenes.filter((s) => s.facts?.length);
+    const mainCall = (b) => ({ entities: b.map((e) => ({ name: e.name, keys: [], quotes: e.quotes ?? [], facts: e.facts.slice(KEEP_MAIN) })), scenes: [] });
+    // A main character with fewer than two quotes is asked for again, once (deepen.js).
+    const again = (b) => {
+        const short = b.filter((e) => (e.quotes ?? []).length < 2);
+        return short.length ? [{ entities: short.map((e) => ({ name: e.name, keys: [], quotes: e.quotes ?? [], facts: e.facts.slice(-1) })), scenes: [] }] : [];
+    };
     const calls = [
-        ...batches(mains, MAINS_PER_CALL).map((b) => ({
-            entities: b.map((e) => ({ name: e.name, keys: [], facts: e.facts.slice(KEEP_MAIN), quotes: e.quotes ?? [] })),
-            scenes: [],
-        })),
+        ...batches(mains, MAINS_PER_CALL).flatMap((b) => [mainCall(b), ...again(b)]),
         ...batches(scenes, SCENES_PER_CALL).map((b) => ({
             entities: [],
-            scenes: b.map((s) => ({ start: s.start, title: s.title, facts: s.facts.slice(1), quotes: s.quotes ?? [] })),
+            scenes: b.map((s) => ({ start: s.start, title: s.title, keys: [], facts: s.facts.slice(1), quotes: s.quotes ?? [] })),
         })),
     ];
     return [JSON.stringify(first), JSON.stringify({ entities: [], scenes: [] }), ...calls.map((c) => JSON.stringify(c))];

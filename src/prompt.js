@@ -240,8 +240,8 @@ export const SHAPE_DEPTH = `{
     {
       "name": "<the main character's name, exactly as listed>",
       "keys": [],
-      "facts": [ { "text": "<a third-person statement>", "section": "appearance" | "personality" | "voice" | "relationships" | "history", "messages": [<ids of the messages that establish it>] } ],
-      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
+      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ],
+      "facts": [ { "text": "<a third-person statement>", "section": "appearance" | "personality" | "voice" | "relationships" | "history", "messages": [<ids of the messages that establish it>] } ]
     }
   ],
   "scenes": [
@@ -258,7 +258,7 @@ export const SHAPE_DEPTH = `{
 const profileRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('  - a main character gets'), FIELD_GUIDE.indexOf('  - a character who recurs')).trim().replace(/^- a main character gets a full profile: /, '');
 const quotesRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- quotes:'), FIELD_GUIDE.indexOf('- caseSensitive:'));
 
-const DEPTH_MAIN = `- a main character: a full profile, at least ${profileRule} The kept facts listed with the character are already in the entry: add what they don't cover, in the same sections, and don't restate them.\n`;
+const DEPTH_MAIN = `- a main character: first 2-4 quotes (a main character without quotes is unfinished), then a full profile, at least ${profileRule} The kept facts listed with the character are already in the entry: add what they don't cover, in the same sections, and don't restate them.\n`;
 const DEPTH_SCENE = `- a scene: what happened, in two to five facts (section "what": the events in order, with who did and said what; section "why": why it matters to the story, what it changes, sets up or reveals), each a full sentence or two with the concrete detail, citing messages inside the scene. Add what the kept fact doesn't cover. Give 1-3 quotes from the scene, the lines that capture it; every scene where anyone speaks has them. Give "keys" too: 2-4 words or phrases that are word for word in the scene's messages, distinctive to this scene (a place, an object, an event), and not among the <taken_keys> (another entry already uses those, and a key two entries share fires neither).\n`;
 const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the message. When narration or "she said" cuts a speech in two, take the piece on one side of the cut; never join the pieces, change punctuation, or fill a gap with "...". Prefer a short line: one sentence of speech, copied from between its quotation marks, is the safest. Check each quote against the message once more before you give it.\n`;
 

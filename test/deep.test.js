@@ -283,7 +283,9 @@ const built2 = (replies = twoStep, extra = {}) => {
 
 test('two steps: the breadth call, one sweep, then the depth batches (2 mains, then 3 scenes, per call)', async () => {
     const { sent, ledger } = await built2();
-    assert.equal(sent.length, 1 + 1 + 2 + 3); // scenes and roster; one sweep; 4 mains in 2 calls, 8 scenes in 3 calls
+    assert.equal(sent.length, 1 + 1 + 2 + 1 + 3); // scenes and roster; one sweep; 4 mains in 2 calls, one asked again for quotes; 8 scenes in 3 calls
+    assert.match(sent[4].user, /<to_write>\n- Oren Hale[\s\S]*<\/to_write>/, 'the one main with a single quote is asked again, alone');
+    assert.equal(sent[4].user.split('<to_write>')[1].split('</to_write>')[0].match(/^- /gm).length, 1);
     assert.ok(!/at least 1,000 characters/.test(sent[0].user), 'the breadth call asks for no profiles');
     assert.match(sent[0].user, /room for about \d+ entities/);
     assert.match(sent[0].user, /Be strict about cuts/);
@@ -291,10 +293,10 @@ test('two steps: the breadth call, one sweep, then the depth batches (2 mains, t
     assert.ok(!/scene starting at message/.test(sent[1].user), 'the sweep lists entities, not scenes');
     assert.match(sent[2].user, /<to_write>[\s\S]*\[main character: write the profile\][\s\S]*Tamsin Dray/);
     assert.ok(!/- a scene:/.test(sent[2].user), 'a batch of mains is not told how to write a scene');
-    assert.match(sent[4].user, /<taken_keys>[\s\S]*Saltgate[\s\S]*<\/taken_keys>/);
+    assert.match(sent[5].user, /<taken_keys>[\s\S]*Saltgate[\s\S]*<\/taken_keys>/);
     assert.ok(!/taken_keys>/.test(sent[2].user.split('</to_write>')[1]), 'mains need no taken keys');
-    assert.ok(!/- a main character:/.test(sent[4].user), 'a batch of scenes is not told how to write a profile');
-    assert.match(sent[4].user, /scene start 0, title "The Drowned Lantern", span: messages 0 to \d+/);
+    assert.ok(!/- a main character:/.test(sent[5].user), 'a batch of scenes is not told how to write a profile');
+    assert.match(sent[5].user, /scene start 0, title "The Drowned Lantern", span: messages 0 to \d+/);
     assert.ok(ledger.review.every((r) => !/depth step/.test(r.reason)));
 });
 
@@ -313,7 +315,7 @@ test('two steps: the same mains and scenes, in full, as the one-shot reply gives
 
 test('two steps: a depth batch that cannot be read costs that batch its depth, not the build', async () => {
     const bad = [...twoStep];
-    const out = await built2([...bad.slice(0, 4), 'not json', 'still not json', ...bad.slice(5)]); // the first scene batch, twice
+    const out = await built2([...bad.slice(0, 5), 'not json', 'still not json', ...bad.slice(6)]); // the first scene batch, twice
     assert.ok(out.ledger.review.some((r) => /depth step's reply could not be used/.test(r.reason) && /The Drowned Lantern/.test(r.name)));
     const lantern = Object.values(out.book.entries).find((e) => e.comment === 'Scene: The Drowned Lantern');
     assert.ok(lantern, 'the scene is still an entry, at breadth');

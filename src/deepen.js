@@ -13,6 +13,7 @@ import { buildDepthPrompt } from './prompt.js';
 import { readReply, ModelOutputError } from './parse.js';
 import { absorb } from './canon.js';
 import { ask } from './build.js';
+import { checkQuotes } from './quotes.js';
 
 export const MAINS_PER_CALL = 2;
 export const SCENES_PER_CALL = 3;
@@ -35,7 +36,9 @@ export async function deepen({ messages, canon, from, to, starts, generate, budg
     // Keys other entries hold: a scene's own keys are asked for beside them.
     const taken = [...new Set(canon.filter((e) => e.kind !== 'scene').flatMap((e) => e.keys))].sort();
     let done = 0;
-    for (const batch of [...batches(mains, MAINS_PER_CALL).map((m) => ({ mains: m, scenes: [] })), ...batches(scenes, SCENES_PER_CALL).map((s) => ({ mains: [], scenes: s }))]) {
+    const queue = [...batches(mains, MAINS_PER_CALL).map((m) => ({ mains: m, scenes: [] })), ...batches(scenes, SCENES_PER_CALL).map((s) => ({ mains: [], scenes: s }))];
+    for (let i = 0; i < queue.length; i++) {
+        const batch = queue[i];
         const names = [...batch.mains, ...batch.scenes].map((e) => e.name).join(', ');
         // A batch of scenes reads only its own stretch; the main characters read it all.
         const stretch = batch.mains.length ? [from, to] : [Math.min(...batch.scenes.map((e) => spans.get(e.start)[0])), Math.max(...batch.scenes.map((e) => spans.get(e.start)[1]))];
@@ -70,6 +73,9 @@ export async function deepen({ messages, canon, from, to, starts, generate, budg
         }
         absorb(canon, found.filter((e) => e.facts.length), from, to, review, renamed);
         done++;
+        // A main character is unfinished without lines to speak: once, the ones still short of two verified quotes are asked for again.
+        const short = batch.mains.filter((e) => checkQuotes(e.quotes, messages).kept.length < 2);
+        if (short.length && !batch.again) queue.splice(i + 1, 0, { mains: short, scenes: [], again: true });
     }
     return done;
 }
