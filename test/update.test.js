@@ -271,7 +271,7 @@ test('two known entries the passages show are one are merged into the named one'
     const kesh = titled(out.book, 'Kesh');
     assert.equal(kesh.uid, uid);
     assert.ok(!titled(out.book, 'the Magistrate'));
-    assert.ok(kesh.key.includes('the Magistrate'));
+    assert.ok(kesh.key.some((k) => /Magistrate/.test(k)));
     assert.match(kesh.content, /watching the docks/);
     assert.ok(out.ledger.review.some((x) => /"the Magistrate" is the same entity/.test(x.reason)));
     // And the next run is zero writes.

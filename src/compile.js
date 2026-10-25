@@ -5,7 +5,8 @@
 // only if it is unique, it appears in the story, and it doesn't fire on
 // nearly every message. Nothing downstream has to remove duplicates.
 
-import { firesOn, spellings } from './match.js';
+import { firesOn, spellings, keyRegex } from './match.js';
+import { checkQuotes } from './quotes.js';
 
 /** A key firing on more than this share of messages retrieves nothing useful. */
 export const MAX_FIRE_FRACTION = 0.8;
@@ -54,16 +55,27 @@ export function toRanges(ids) {
     return ranges;
 }
 
+/**
+ * What an entity carries beyond keys and facts: whether it is a main
+ * character, and for a scene its place in the story and its particulars.
+ */
+export const EXTRA_FIELDS = ['kind', 'main', 'start', 'where', 'when', 'who', 'line'];
+
+/** The extra fields an entity has, as a plain object to spread. */
+export const extrasOf = (e) => Object.fromEntries(EXTRA_FIELDS.filter((f) => e[f] != null).map((f) => [f, structuredClone(e[f])]));
+
 /** Two replies about one name are one entity: merge rather than split. */
 function mergeByName(entities) {
     const byName = new Map();
     for (const e of entities) {
         const k = fold(e.name);
         const prev = byName.get(k);
-        if (!prev) byName.set(k, { ...e, keys: [...e.keys], facts: [...e.facts] });
+        if (!prev) byName.set(k, { ...e, keys: [...e.keys], facts: [...e.facts], quotes: [...(e.quotes ?? [])] });
         else {
             prev.keys.push(...e.keys);
             prev.facts.push(...e.facts);
+            prev.quotes.push(...(e.quotes ?? []));
+            for (const f of EXTRA_FIELDS) prev[f] ??= e[f];
             prev.caseSensitive ||= e.caseSensitive;
             prev.cascade &&= e.cascade;
             prev.throttle = Math.max(prev.throttle, e.throttle);
@@ -108,13 +120,15 @@ function coveredBy(e, foreign) {
  * entities stay in the canon but get no entry, and their keys are free: a
  * run never brings back what someone removed (the audit can, if asked).
  *
- * Returns { entries, ledger, review, contested, nextUid, deleted }. `ledger`
+ * `timeline` is the uid the Timeline entry had last time.
+ *
+ * Returns { entries, ledger, review, contested, timeline, nextUid, deleted }. `ledger`
  * has one record per entity, shipped or not: the entity as the model gave it
  * (the canon a later run starts from) plus `uid` and `compiled`, every key
  * decision with its reason. `deleted` maps each deleted uid still in the
  * canon to its entity's name.
  */
-export function compile(entities, messages, { pinned = [], foreign = [], uids = new Map(), nextUid = 0, deleted = new Set() } = {}) {
+export function compile(entities, messages, { pinned = [], foreign = [], uids = new Map(), nextUid = 0, deleted = new Set(), timeline = null } = {}) {
     const review = [];
     const maxFires = Math.floor(messages.length * MAX_FIRE_FRACTION);
 
@@ -125,6 +139,13 @@ export function compile(entities, messages, { pinned = [], foreign = [], uids = 
     const keptUids = new Set(pinned.map((p) => p.uid));
     for (const [name, uid] of uids) if (keptUids.has(uid) && !pinnedUid.has(name)) pinnedUid.set(name, uid);
     const merged = mergeByName(entities);
+    // A quote is kept only if it is word for word in the message it cites.
+    for (const e of merged) {
+        const { kept, removed } = checkQuotes(e.quotes, messages);
+        e.quotes = kept;
+        for (const r of removed) review.push({ name: e.name, reason: `quote removed, ${r.why}: "${r.quote}"`, quote: r.quote });
+        if (e.main && contentLength(e) < MIN_PROFILE) review.push({ name: e.name, reason: `main character, but its profile is ${contentLength(e)} characters (under ${MIN_PROFILE})` });
+    }
     const held = [];
     const gone = [];
     const elsewhere = [];
@@ -208,8 +229,27 @@ export function compile(entities, messages, { pinned = [], foreign = [], uids = 
         c.keys = c.keys.filter((k) => {
             const ids = holders.get(fold(k));
             if (ids.size === 1) return true;
+            // A scene entry gives way to the entity that has the same key: the
+            // place or event is what that key is for, and the entity's entry
+            // is the one that should fire on it.
+            const sceneIds = new Set(candidates.flatMap((x, i) => (x.kind === 'scene' ? [`new:${i}`] : [])));
+            const me = `new:${candidates.indexOf(c)}`;
+            if (!sceneIds.has(me) && [...ids].every((id) => id === me || sceneIds.has(id))) return true;
             const far = [...ids].find((id) => id.startsWith('far:'));
             c.dropped.push({ key: k, reason: far ? `a key of '${active[far.slice(4)].entry.comment}' in '${active[far.slice(4)].book}'` : 'claimed by another entity' });
+            return false;
+        });
+    }
+
+    // 2b. A key that only repeats another kept key of the same entity in a
+    //     longer form ("Morgana Veni" beside "Morgana") fires wherever the
+    //     shorter one does and never adds a trigger. The shorter one stays.
+    for (const c of candidates) {
+        const redundant = (k) => c.keys.find((j) => j !== k && fold(j) !== fold(k) && keyRegex(j, c.caseSensitive).test(k));
+        c.keys = c.keys.filter((k) => {
+            const short = redundant(k);
+            if (!short) return true;
+            c.dropped.push({ key: k, reason: `repeats '${short}' in a longer form; adds no trigger` });
             return false;
         });
     }
@@ -247,14 +287,28 @@ export function compile(entities, messages, { pinned = [], foreign = [], uids = 
         while (taken.has(next)) next++;
         taken.add((c.uid = next++));
     }
-    const entries = [...pinned.map((p) => structuredClone(p)), ...shipped.map((c) => toEntry(c.uid, c))];
+    // 4b. The Timeline: one constant entry listing the scenes in order. It is
+    //     derived from the scene entities, so it is never an entity itself;
+    //     the ledger keeps its uid. Held, pinned or deleted, it is left alone.
+    const scenesIn = merged.filter((e) => e.kind === 'scene' && !gone.includes(e)).sort((a, b) => a.start - b.start);
+    let timelineUid = scenesIn.length ? timeline : null;
+    let timelineEntry = null;
+    if (scenesIn.length && !(timelineUid != null && (deleted.has(timelineUid) || pinned.some((p) => p.uid === timelineUid)))) {
+        if (timelineUid == null || taken.has(timelineUid)) {
+            while (taken.has(next)) next++;
+            timelineUid = next++;
+        }
+        taken.add(timelineUid);
+        timelineEntry = toTimeline(timelineUid, scenesIn);
+    }
+    const entries = [...pinned.map((p) => structuredClone(p)), ...shipped.map((c) => toEntry(c.uid, c)), ...(timelineEntry ? [timelineEntry] : [])];
     entries.sort((a, b) => a.uid - b.uid);
 
     // 5. The ledger: every entity, as the model gave it, with what became of it.
     const canon = new Map(merged.map((e) => [fold(e.name), e]));
     const record = (name, uid, compiled) => {
         const e = canon.get(fold(name));
-        return { name: e.name, keys: e.keys, facts: e.facts, caseSensitive: e.caseSensitive, cascade: e.cascade, throttle: e.throttle, uid, compiled };
+        return { name: e.name, ...extrasOf(e), keys: e.keys, facts: e.facts, ...(e.quotes?.length ? { quotes: e.quotes } : {}), caseSensitive: e.caseSensitive, cascade: e.cascade, throttle: e.throttle, uid, compiled };
     };
     const ledger = [
         ...shipped.map((c) => record(c.name, c.uid, { keys: c.keys, caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: c.anchor })),
@@ -264,8 +318,54 @@ export function compile(entities, messages, { pinned = [], foreign = [], uids = 
         ...unshipped.map((c) => record(c.name, null, { keys: [], caseSensitive: c.caseSensitive, dropped: c.dropped, anchor: null })),
     ];
     const maxUid = Math.max(nextUid - 1, ...[...taken].filter(Number.isInteger));
-    return { entries, ledger, review, contested, nextUid: maxUid + 1, deleted: Object.fromEntries(gone.map((e) => [String(uids.get(fold(e.name))), e.name])) };
+    return { entries, ledger, review, contested, timeline: timelineUid, nextUid: maxUid + 1, deleted: Object.fromEntries(gone.map((e) => [String(uids.get(fold(e.name))), e.name])) };
 }
+
+/** A main character's entry is expected to run at least this long. */
+export const MIN_PROFILE = 1000;
+
+const SECTION_ORDER = ['appearance', 'personality', 'voice', 'relationships', 'history'];
+const SECTION_TITLE = { appearance: 'Appearance', personality: 'Personality and voice', voice: 'Personality and voice', relationships: 'Relationships', history: 'History', why: 'Why it matters' };
+
+const quoteLine = (q) => `"${q.text}"${q.speaker ? ` (${q.speaker})` : ''}`;
+
+/**
+ * The entry's text, built whole from the entity every time it is compiled:
+ * a profile is laid out by section (appearance; personality and voice, with
+ * the quotes; relationships; history in story order), never appended to. An
+ * entity with no sections is its facts, as before.
+ */
+export function renderContent(e) {
+    const facts = e.facts ?? [];
+    const quotes = e.quotes ?? [];
+    const sectioned = facts.some((f) => f.section);
+    const head = e.kind === 'scene'
+        ? [[e.when && `When: ${e.when}.`, e.where && `Where: ${e.where}.`, e.who?.length && `Who: ${e.who.join(', ')}.`].filter(Boolean).join(' ')].filter(Boolean)
+        : [];
+    if (!sectioned && !quotes.length && !head.length) return facts.map((f) => f.text).join(' ');
+    const lines = [...head];
+    const plainFacts = facts.filter((f) => !f.section || !SECTION_TITLE[f.section]);
+    if (plainFacts.length) lines.push(plainFacts.map((f) => f.text).join(' '));
+    const groups = new Map();
+    for (const f of facts) {
+        if (!f.section || !SECTION_TITLE[f.section]) continue;
+        const title = SECTION_TITLE[f.section];
+        groups.set(title, [...(groups.get(title) ?? []), f]);
+    }
+    const order = [...SECTION_ORDER, 'why'].map((k) => SECTION_TITLE[k]).filter((t, i, all) => all.indexOf(t) === i);
+    const voiceTitle = SECTION_TITLE.personality;
+    for (const title of order) {
+        let list = groups.get(title) ?? [];
+        if (title === SECTION_TITLE.history) list = [...list].sort((a, b) => a.messages[0] - b.messages[0]);
+        const text = list.map((f) => f.text).join(' ');
+        const q = title === voiceTitle && e.kind !== 'scene' ? quotes.map(quoteLine).join(' ') : '';
+        if (text || q) lines.push(`${title}: ${text}${q ? `${text ? ' ' : ''}Said: ${q}` : ''}`.trim());
+    }
+    if (quotes.length && !lines.some((l) => l.includes('Said: '))) lines.push(`Said: ${quotes.map(quoteLine).join(' ')}`);
+    return lines.join('\n');
+}
+
+const contentLength = (e) => renderContent(e).length;
 
 /** The full SillyTavern entry. The model never writes any of these fields. */
 export function toEntry(uid, c) {
@@ -274,7 +374,7 @@ export function toEntry(uid, c) {
         key: c.keys,
         keysecondary: [],
         comment: c.name,
-        content: c.facts.map((f) => f.text).join(' '),
+        content: renderContent(c),
         constant: false,
         selective: false,
         selectiveLogic: 0,
@@ -293,8 +393,27 @@ export function toEntry(uid, c) {
         canonkeeper: {
             sources: c.sources,
             pinned: false,
-            facts: c.facts.map((f) => ({ text: f.text, sources: toRanges(f.messages) })),
+            ...(c.kind ? { kind: c.kind } : {}),
+            ...(c.kind === 'scene' ? { start: c.start } : {}),
+            facts: c.facts.map((f) => ({ text: f.text, sources: toRanges(f.messages), ...(f.section ? { section: f.section } : {}) })),
+            ...(c.quotes?.length ? { quotes: c.quotes } : {}),
             ...(c.anchor == null ? {} : { anchor: c.anchor }),
         },
+    };
+}
+
+/**
+ * The Timeline: one constant entry, one line per scene in story order. It is
+ * built from the scene entities and fires on every message, so the model
+ * always knows where the story has been.
+ */
+export function toTimeline(uid, scenes) {
+    const lines = scenes.map((s, i) => `${i + 1}. ${s.name.replace(/^Scene: /, '')}${s.when ? ` (${s.when})` : ''}: ${s.line ?? s.facts[0].text}`);
+    const cited = scenes.flatMap((s) => s.facts.flatMap((f) => f.messages));
+    return {
+        ...toEntry(uid, { name: 'Timeline', keys: [], facts: [], caseSensitive: false, cascade: false, throttle: 0, sources: toRanges(cited) }),
+        content: lines.join('\n'),
+        constant: true,
+        canonkeeper: { sources: toRanges(cited), pinned: false, kind: 'timeline', facts: [] },
     };
 }

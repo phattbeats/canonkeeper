@@ -18,7 +18,7 @@
 
 import { planBudget, estimateTokens, TooLongError } from './budget.js';
 import { buildUpdatePrompt } from './prompt.js';
-import { compile } from './compile.js';
+import { compile, extrasOf } from './compile.js';
 import { fingerprint } from './fingerprint.js';
 import { align } from './align.js';
 import { heldEntries, plan, apply } from './plan.js';
@@ -31,7 +31,9 @@ function canonOf(ledger) {
     return ledger.entities.map((e) => ({
         name: e.name,
         keys: [...e.keys],
-        facts: e.facts.map((f) => ({ text: f.text, messages: [...f.messages] })),
+        ...extrasOf(e),
+        facts: e.facts.map((f) => ({ text: f.text, messages: [...f.messages], ...(f.section ? { section: f.section } : {}) })),
+        ...(e.quotes?.length ? { quotes: structuredClone(e.quotes) } : {}),
         caseSensitive: e.caseSensitive,
         cascade: e.cascade,
         throttle: e.throttle,
@@ -109,8 +111,9 @@ function merge(canon, found, previous, fresh, review, renamed) {
     const listedAs = (k) => byName.get(fold(k)) ?? byName.get(`the ${fold(k)}`) ?? byName.get(fold(k).replace(/^the /, ''));
     for (const f of found) {
         const owners = keyOwners.get(fold(f.name)) ?? [];
-        let known = byName.get(fold(f.name)) ?? (owners.length === 1 ? owners[0] : null);
-        const listed = [...new Set(f.keys.map(listedAs).filter((x) => x && x !== known))];
+        // A scene is the same scene wherever it starts the same.
+        let known = byName.get(fold(f.name)) ?? (f.kind === 'scene' ? canon.find((e) => e.kind === 'scene' && e.start === f.start) : null) ?? (owners.length === 1 ? owners[0] : null);
+        const listed = f.kind === 'scene' ? [] : [...new Set(f.keys.map(listedAs).filter((x) => x && x !== known))];
         if (!known && listed.length === 1) {
             known = listed.shift();
             byName.delete(fold(known.name));
@@ -150,7 +153,7 @@ function merge(canon, found, previous, fresh, review, renamed) {
             const before = restatedFrom(name, fact.text);
             if (before) {
                 restatedNow.add(tag(name, fact.text));
-                facts.push({ text: fact.text, messages: [...new Set([...fact.messages, ...before])].sort((x, y) => x - y) });
+                facts.push({ text: fact.text, messages: [...new Set([...fact.messages, ...before])].sort((x, y) => x - y), ...(fact.section ? { section: fact.section } : {}) });
             }
             else if (fact.messages.some((id) => fresh.has(id))) facts.push(fact);
             else if (stand-- > 0) facts.push(fact);
@@ -168,6 +171,10 @@ function merge(canon, found, previous, fresh, review, renamed) {
             e.keys.push(k);
             own(k, e);
         }
+        // What the reply says about the entity itself: a scene's particulars are restated, a quote is added.
+        for (const field of ['main', 'where', 'when', 'who', 'line']) if (f[field] != null) e[field] = f[field];
+        if (f.kind === 'scene') e.kind = 'scene';
+        for (const q of f.quotes ?? []) if (!(e.quotes ??= []).some((x) => x.text === q.text)) e.quotes.push(q);
         for (const fact of facts) {
             const same = e.facts.find((x) => fold(x.text) === fold(fact.text));
             if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((x, y) => x - y);
@@ -262,6 +269,9 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
                 }
             }
             e.facts = facts;
+            // A quote follows its message; one whose message was edited or deleted goes.
+            if (e.quotes) e.quotes = e.quotes.map((q) => ({ ...q, message: toNew[q.message] })).filter((q) => q.message != null);
+            if (e.kind === 'scene') e.start = remapScenes([e.start], toNew, messages.length)[0] ?? 0;
         }
         if (!starts) scenes = scenes.filter((b) => !windows.some(([a, z]) => b > a && b <= z));
 
@@ -289,7 +299,9 @@ export async function update({ book, ledger, messages, generate, contextTokens, 
     }
 
     if (starts) scenes = sceneStarts(starts, messages.length);
-    const compiled = compile(canon, messages, { pinned: kept, foreign, uids, nextUid: ledger.nextUid, deleted });
+    // A scene entry whose scene is gone (its boundary moved or was dropped) goes with it.
+    canon = canon.filter((e) => e.kind !== 'scene' || e.start === 0 || scenes.includes(e.start));
+    const compiled = compile(canon, messages, { pinned: kept, foreign, uids, nextUid: ledger.nextUid, deleted, timeline: ledger.timeline });
     const ops = plan(book, compiled.entries);
     return {
         book: apply(book, ops),

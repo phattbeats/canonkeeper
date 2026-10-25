@@ -18,6 +18,8 @@ node bin/canonkeeper.js accept <chat.jsonl> --run <dir> <finding id>            
 node bin/canonkeeper.js dismiss <dir> <finding id>
 npm run build:story                                      # replay the recorded replies, then gate them
 npm run build:chunked                                    # the same story on a window too small for it
+npm run build:deep                                       # replay a build with profiles, quotes, scene entries and the Timeline, then gate it with D17-D19
+node harness/depth-compare.js <chat.jsonl> <old-book.json> <new-book.json>   # two books of one chat, side by side
 ```
 
 `build` writes `book.json`, `scenes.json`, `ledger.json` and `replies.json` (the raw model reply, which `--replay` plays back with no model). The offline model is the Claude Code CLI in print mode, with no tools and thinking off. A reply cut off at the output limit counts as a bad reply.
@@ -31,11 +33,15 @@ How it works:
    - a capitalised key whose lowercase form also appears in the story makes the entry case-sensitive (Wren the runner vs. a wren);
    - a key that fires on more than 80% of messages is dropped;
    - a key two entities claim is dropped from both, unless one is pinned, in which case the pin keeps it;
-   - two replies about the same name are merged, never split.
+   - two replies about the same name are merged, never split;
+   - a key that only repeats another kept key of the same entity in a longer form ("Morgana Veni" beside "Morgana") is dropped, and the ledger records why. It fires wherever the shorter one does, so it adds no trigger. When the shorter key was lost to another entity, the longer one stays. The model is asked for distinct triggers instead: nicknames, titles, and role nouns the story uses ("the witch", "mistress", "apprentice"). A role word two entities share is still dropped from both.
 
    An entity with no usable key left goes to the review list in `ledger.json` instead of the book. If none of an entity's cited messages names it (the model cited scenes that call him "the King"), the first message that does name it is added to `sources` as `canonkeeper.anchor`, kept apart from the facts' own sources. The model never writes an ST field: `cascade: false` compiles to `preventRecursion`, and `throttle` to `cooldown`.
-4. **Provenance on every fact.** Each entry carries `canonkeeper.facts[]` with the source ranges for each fact, and `canonkeeper.sources` is their union.
-5. **Re-runs** are step 2, below.
+4. **Depth scales with the story** (`src/prompt.js`, `src/compile.js`). The model marks main characters (`main`) and tags each fact with a `section`. A main character's entry is a profile laid out whole every time it is compiled: appearance; personality and voice, with 2-4 quotes; relationships; history in story order. It is expected to run at least 1,000 characters, and a main character under that is listed for review. Minor entities stay short. A profile is never appended to: new facts go into their sections and the entry is re-rendered, so a live update or a later part of a chunked build can't leave a run-on list.
+5. **Quotes are checked.** Each quote cites the message it comes from. It stays only if it is word for word in that message (typography and spacing aside, nothing else), and has at least two words. One that isn't is removed and listed in the review list with the quote. This blocks invented dialogue.
+6. **Scene entries and the Timeline.** Each scene the model reports comes with when, where, who, a line, facts (what happened, and why it matters) and quotes, and becomes an entry titled `Scene: ...`. Its keys are what is distinctive to the scene (place, event, object). A scene key that an entity also holds goes to the entity. One constant entry, **Timeline**, lists the scenes in story order, one line each. It is built from the scene entries, keeps its uid in `ledger.timeline`, and if a human edits, pins or deletes it, a run leaves it alone. In the ledger a scene is an entity with `kind: "scene"` and a `start`, so it is re-read, audited, held and renamed like any other. An edit to a scene's messages re-reads it, and an edit to a message a quote cites removes the quote.
+7. **Provenance on every fact.** Each entry carries `canonkeeper.facts[]` with the source ranges for each fact, and `canonkeeper.sources` is their union.
+8. **Re-runs** are step 2, below.
 
 ## Long stories: the chunked fallback (`src/chunked.js`)
 
@@ -357,6 +363,8 @@ node harness/live-runs.js --model <id> --n 10     # n live one-shot builds, each
 
 With `--chunked`, the gate also runs K10 on the run's `ledger.json`. Step 4's bar for a chunked run is I1–I6 plus K10, so C7 and C8 are scored and shown as `INFO` but don't gate it.
 
+With `--deep`, the run is a build with scene entries and profiles (`npm run build:deep`), and the gate also runs D17-D19.
+
 With `--audit`, the run directory is an audit run (below), and the gate runs only A12 and A13: step 6's bar.
 
 With `--books`, the chat had other active lorebooks. The gate runs B14, and I1 and C7 score the chat's book and the other books together, so an entity another book covers counts as found, and only once.
@@ -390,6 +398,9 @@ The checks test properties and coverage, never wording. A builder that writes be
 | B14 | With `--books` only. Every other book's file is byte-identical, as SillyTavern's HTTP API returns it, after each run. No entry in the chat's book is the same entity as an enabled entry in another book: neither one's title is the other's title or key, and they share no key |
 | X15 | With `--extras` only. Two recall-off prompts are identical, and every recall-broken prompt is identical to them. The recall-on prompt is the recall-off prompt plus exactly one message, and that message is the picked entries, none already in the prompt, within the entry count and token budget. A recall that picks nothing is red: it proves nothing |
 | X16 | With `--extras` only. After the failed clip, the lorebook file is byte-identical, an error is recorded and the next prompt is the baseline. The working clip adds exactly one entry with keys and a clip record, changes no other entry and claims no key another entry holds. `/canon` afterwards makes no write, leaves the file as it was and holds the clip. If a clip key is in the last messages, the clip is in the prompt |
+| D17 | With `--deep` only. Every scene in the answer key has a scene entry (its start within ±1) with at least one verified quote (word for word in the message it cites, and in the entry's text), a `Where:` and a `When:`, and the constant Timeline has a line for every scene entry |
+| D18 | With `--deep` only. Each entity the answer key marks `main` has an entry of at least 1,000 characters with at least two verified quotes |
+| D19 | With `--deep` only. No entry keeps a key that only repeats another of its keys in a longer form |
 | K10 | With `--chunked` only. The run's `ledger.json` says it was built in parts: two or more parts that read every message exactly once, in order, and a reconciliation record. A one-shot run gated as chunked is red |
 
 Before scoring, the gate also validates the answer key itself, because a wrong key makes every score wrong. It checks that no name belongs to two entities, that every entity is mentioned in the transcript, that decoys are real non-mentions, and that the planted cases are present.
@@ -438,7 +449,8 @@ The fixture story is *The Saltwind Chart*. It's an invented 81-message story wit
 | `reference/` | The hand-built reference run. It scores 1.0 against the answer key |
 | `broken-collision/` | The reference with the planted collision left unresolved. CI requires the gate to go red on it |
 | `recorded/replies.json` | A full-build reply recorded from a real model run, replayed in CI |
-| `chunked/replies.json` | The replies recorded from a real chunked build (claude-sonnet-5) with `--context 10000 --output-share 0.5`: four parts (two of them handed an unfinished scene to the next) and a reconciliation. Part 3 renamed "the cartographer" to Ines Vell. It passes I1–I6 and K10. C7 misses the Drowned Lantern and the Gull's Errand, which no part listed. Replayed in CI |
+| `deep/replies.json` | A full-build reply recorded from a real model run (claude-sonnet-5-5) with the instructions for deep entries: 8 scene entries and the Timeline, profiles with quotes. `npm run build:deep` replays it and gates it with `--deep`. The answer key marks Tamsin Dray and Mora Quill `main`; in an 81-message story the other characters don't have 1,000 characters of material, and the review list says so. Replayed in CI |
+| `chunked/replies.json` | The replies recorded from a real chunked build (claude-sonnet-5) with `--context 10000 --output-share 0.5` (replayed at `--context 15200`, the same four parts, since the instructions grew): four parts (two of them handed an unfinished scene to the next) and a reconciliation. Part 3 renamed "the cartographer" to Ines Vell. It passes I1–I6 and K10. C7 misses the Drowned Lantern and the Gull's Errand, which no part listed. Replayed in CI |
 | `live/` | The replies recorded from a real live session (`harness/live-sim.js`): the detector's (claude-haiku-4-5) and the writer's (claude-sonnet-5). `npm run build:live` replays them through the adapter's tick and gates the result with `--live`. Replayed in CI |
 | `audit/` | `plant.json`, the damage `harness/plant.js` plants for the audit: two false facts, a collision and a deletion. `verify-clean.json` and `verify-planted.json` are claim verdicts recorded from a real run (claude-haiku-4-5), replayed in CI by `npm run build:audit` |
 | `edits/undercroft/` | The story with one scene (20–29) edited. Message 20 changes who cut the Undercroft (the Brine Kings), and message 22 adds a new character (Fennick Rye). `replies.json` is the update reply recorded from a real model run (claude-sonnet-5) |

@@ -14,10 +14,12 @@
 // With --books, the chat had other active lorebooks (see loadOthers): B14
 // runs, and I1 and C7 score the chat's book and the others together, so an
 // entity another book covers counts as found, and once.
+// With --deep, the run is a build with scene entries and profiles (fixtures/story/deep)
+// and D17–D19 also run.
 // With --extras, the run directory is an extras run (see loadExtras) and the
 // gate runs only X15 and X16: the step 7 bar.
 //
-//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--audit] [--books] [--extras] [--json]
+//   node harness/gate.js [--story fixtures/story] [--run fixtures/story/reference] [--edits] [--chunked] [--live] [--audit] [--books] [--extras] [--deep] [--json]
 //
 // Exit codes: 0 every check green · 1 at least one check red ·
 //             2 fixtures missing or malformed (never a pass)
@@ -44,9 +46,12 @@ import {
     checkB14OtherBooks,
     checkX15Recall,
     checkX16Clip,
+    checkD17Scenes,
+    checkD18MainCharacters,
+    checkD19RedundantKeys,
 } from './checks.js';
 
-export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false, audit = false, books = false, extras = false }) {
+export function runGate({ storyDir, runDir, edits = false, chunked = false, live = false, audit = false, books = false, extras = false, deep = false }) {
     const messages = loadTranscript(join(storyDir, 'transcript.jsonl'));
     const key = loadAnswerKey(join(storyDir, 'answer-key.json'));
 
@@ -65,7 +70,9 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
     }
     const run = loadRun(runDir);
     const others = books ? loadOthers(runDir) : [];
+    // Scene entries and the Timeline are the story's, not entities: C7 scores the rest.
     const all = [...run.book, ...others.flatMap((b) => b.entries)];
+    const entities = all.filter((e) => e.kind !== 'scene' && e.kind !== 'timeline');
 
     const checks = [
         checkI1KeywordCollisions(all),
@@ -74,10 +81,11 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
         checkI4Provenance(run.book, messages),
         checkI5ZeroWritesOnRerun(run.book, run.rerun),
         checkI6PinsSurvive(run.book, run.rerun),
-        { ...scoreC7Coverage(all, key, messages), ...(chunked || live ? { gates: false } : {}) },
+        { ...scoreC7Coverage(entities, key, messages), ...(chunked || live ? { gates: false } : {}) },
         { ...scoreC8Boundaries(run.boundaries, key.boundaries), ...(chunked ? { gates: false } : {}) },
     ];
     if (books) checks.push(checkB14OtherBooks(run.book, others));
+    if (deep) checks.push(checkD17Scenes(run.book, messages, key), checkD18MainCharacters(run.book, messages, key), checkD19RedundantKeys(run.book));
     if (chunked) checks.push(checkK10Chunked(loadLedger(runDir), messages.length));
     if (live) checks.push(checkL11Live(loadLive(runDir), messages.length));
     if (edits) {
@@ -87,7 +95,7 @@ export function runGate({ storyDir, runDir, edits = false, chunked = false, live
 }
 
 function parseArgs(argv) {
-    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, audit: false, books: false, extras: false, json: false };
+    const args = { story: 'fixtures/story', run: null, edits: false, chunked: false, live: false, audit: false, books: false, extras: false, deep: false, json: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--story') args.story = argv[++i];
         else if (argv[i] === '--run') args.run = argv[++i];
@@ -98,6 +106,7 @@ function parseArgs(argv) {
         else if (argv[i] === '--audit') args.audit = true;
         else if (argv[i] === '--books') args.books = true;
         else if (argv[i] === '--extras') args.extras = true;
+        else if (argv[i] === '--deep') args.deep = true;
         else throw new FixtureError(`unknown argument: ${argv[i]}`);
     }
     args.run ??= join(args.story, 'reference');
@@ -109,7 +118,7 @@ function main() {
     let args;
     try {
         args = parseArgs(process.argv.slice(2));
-        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live, audit: args.audit, books: args.books, extras: args.extras });
+        report = runGate({ storyDir: resolve(args.story), runDir: resolve(args.run), edits: args.edits, chunked: args.chunked, live: args.live, audit: args.audit, books: args.books, extras: args.extras, deep: args.deep });
     } catch (err) {
         if (!(err instanceof FixtureError)) throw err;
         console.error(`FIXTURE ERROR: ${err.message}`);

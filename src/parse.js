@@ -40,27 +40,72 @@ export function readReply(text, messageCount) {
     const scenes = [...new Set(starts)].sort((a, b) => a - b);
 
     const entities = [];
+    const facts = (list) =>
+        list
+            .filter((f) => isStr(f?.text) && Array.isArray(f.messages))
+            .map((f) => ({
+                text: f.text.trim(),
+                messages: [...new Set(f.messages.filter(validId))].sort((a, b) => a - b),
+                ...(isStr(f.section) ? { section: f.section.trim().toLowerCase() } : {}),
+            }))
+            .filter((f) => f.messages.length); // a fact with no valid source is not a fact
+    // Quotes are only shaped here; whether each is word for word in its message is compile's check.
+    const quotes = (list) =>
+        (Array.isArray(list) ? list : [])
+            .filter((q) => isStr(q?.text) && Number.isInteger(q.message))
+            .map((q) => ({ text: q.text.trim(), message: q.message, ...(isStr(q.speaker) ? { speaker: q.speaker.trim() } : {}) }));
+    const taken = new Set();
     data.entities.forEach((e, i) => {
         const label = isStr(e?.name) ? e.name.trim() : `entity #${i}`;
         if (!isStr(e?.name) || !Array.isArray(e.keys) || !Array.isArray(e.facts)) {
             review.push({ name: label, reason: 'malformed entity (needs name, keys and facts)' });
             return;
         }
-        const facts = e.facts
-            .filter((f) => isStr(f?.text) && Array.isArray(f.messages))
-            .map((f) => ({ text: f.text.trim(), messages: [...new Set(f.messages.filter(validId))].sort((a, b) => a - b) }))
-            .filter((f) => f.messages.length); // a fact with no valid source is not a fact
-        if (!facts.length) {
+        const fs = facts(e.facts);
+        if (!fs.length) {
             review.push({ name: label, reason: 'no fact with a valid source message' });
             return;
         }
+        taken.add(label.toLowerCase());
         entities.push({
             name: label,
             keys: e.keys.filter(isStr).map((k) => k.trim()),
-            facts,
+            facts: fs,
+            ...(e.main === true ? { main: true } : {}),
+            ...(quotes(e.quotes).length ? { quotes: quotes(e.quotes) } : {}),
             caseSensitive: e.caseSensitive === true,
             cascade: e.cascade !== false,
             throttle: Number.isInteger(e.throttle) && e.throttle > 0 ? e.throttle : 0,
+        });
+    });
+
+    // A scene that comes with facts is also an entry of its own. One without
+    // is only a boundary (the older shape).
+    data.scenes.forEach((s, i) => {
+        if (!Array.isArray(s?.facts) || !isStr(s?.title)) return;
+        const fs = facts(s.facts);
+        if (!validId(s.start) || !fs.length) {
+            if (fs.length || s.facts.length) review.push({ name: `scene #${i}`, reason: 'scene entry needs a valid start and a fact with a valid source message' });
+            return;
+        }
+        let name = `Scene: ${s.title.trim()}`;
+        for (let n = 2; taken.has(name.toLowerCase()); n++) name = `Scene: ${s.title.trim()} (${n})`;
+        taken.add(name.toLowerCase());
+        const list = (x) => (Array.isArray(x) ? x.filter(isStr).map((v) => v.trim()) : []);
+        entities.push({
+            name,
+            kind: 'scene',
+            start: s.start,
+            ...(isStr(s.where) ? { where: s.where.trim() } : {}),
+            ...(isStr(s.when) ? { when: s.when.trim() } : {}),
+            ...(list(s.who).length ? { who: list(s.who) } : {}),
+            ...(isStr(s.line) ? { line: s.line.trim() } : {}),
+            keys: list(s.keys),
+            facts: fs,
+            ...(quotes(s.quotes).length ? { quotes: quotes(s.quotes) } : {}),
+            caseSensitive: s.caseSensitive === true,
+            cascade: true,
+            throttle: 0,
         });
     });
     return { scenes, entities, review };

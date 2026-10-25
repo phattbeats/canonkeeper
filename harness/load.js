@@ -61,6 +61,9 @@ export function normalizeEntry(raw) {
         constant: !!raw.constant,
         disabled: !!raw.disable,
         sources: Array.isArray(ck.sources) ? ck.sources : [],
+        kind: ck.kind ?? null,
+        start: Number.isInteger(ck.start) ? ck.start : null,
+        quotes: Array.isArray(ck.quotes) ? ck.quotes : [],
         pinned: !!ck.pinned,
         raw,
     };

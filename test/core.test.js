@@ -64,7 +64,8 @@ test('a bare title only one entity claims is still dropped when another entity k
     const { entries, contested } = compile([ent('Mora Quill', ['Quill', 'Captain'], [2]), ent('Oren Hale', ['Hale', 'Captain Hale'], [8])], messages);
     assert.deepEqual(contested, ['captain']);
     assert.ok(!titled(entries, 'Mora Quill').key.includes('Captain'));
-    assert.ok(titled(entries, 'Oren Hale').key.includes('Captain Hale'));
+    // 'Captain Hale' only repeats 'Hale' in a longer form, so it is not kept.
+    assert.deepEqual(titled(entries, 'Oren Hale').key, ['Hale']);
 });
 
 test('a word of an entity\'s own name is not contested by another entity\'s phrase', () => {
@@ -102,8 +103,8 @@ test('a case-sensitive "the X" key also matches "The X" at the start of a senten
 
 test('a key the story never uses is dropped', () => {
     const { entries, ledger } = compile([ent('Tamsin Dray', ['Tamsin', 'the Courier Queen'], [2])], messages);
-    assert.deepEqual([...entries[0].key].sort(), ['Tamsin', 'Tamsin Dray']);
-    assert.match(ledger[0].compiled.dropped[0].reason, /not in the transcript/);
+    assert.deepEqual([...entries[0].key].sort(), ['Tamsin']);
+    assert.ok(ledger[0].compiled.dropped.some((d) => /not in the transcript/.test(d.reason)));
 });
 
 test('a key that fires on nearly every message is dropped', () => {
@@ -130,7 +131,7 @@ test('every fact keeps its own provenance and the entry gets their union', () =>
 test('two replies about one name are merged, never split', () => {
     const { entries } = compile([ent('Ines Vell', ['Ines'], [65]), ent('ines vell', ['cartographer'], [4])], messages);
     assert.equal(entries.length, 1);
-    assert.deepEqual([...entries[0].key].sort(), ['Ines', 'Ines Vell', 'cartographer']);
+    assert.deepEqual([...entries[0].key].sort(), ['Ines', 'cartographer']);
 });
 
 test('the model never writes ST fields: cascade and throttle compile to recursion and cooldown', () => {

@@ -62,6 +62,7 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
         nextUid: compiled.nextUid,
         written,
         contested: compiled.contested,
+        ...(compiled.timeline != null ? { timeline: compiled.timeline } : {}),
         review,
         ...(Object.keys(compiled.deleted ?? {}).length ? { deleted: compiled.deleted } : {}),
         ...(chunked ? { chunked } : {}),

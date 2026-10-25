@@ -13,24 +13,44 @@ export const SYSTEM = `You build a lorebook for a roleplay story. You read the w
 export const UPDATE_SYSTEM = `You keep a roleplay story's lorebook up to date. You read the passages of the transcript that are new or have changed and report two things as JSON: where scenes start in them, and what they establish about the entities the story needs to remember.\n\n${RULES}`;
 
 export const SHAPE = `{
-  "scenes": [ { "cut": "<what the story skips here>", "start": <message id where the scene begins>, "title": "<short label>" } ],
   "entities": [
     {
       "name": "<the entity's fullest proper name as the story gives it>",
       "keys": ["<words the story uses to refer to it>"],
-      "facts": [ { "text": "<one short third-person statement>", "messages": [<ids of the messages that establish it>] } ],
+      "main": <true for a main character, else false>,
+      "facts": [ { "text": "<a third-person statement>", "section": "appearance" | "personality" | "voice" | "relationships" | "history", "messages": [<ids of the messages that establish it>] } ],
+      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ],
       "caseSensitive": <true|false>,
       "cascade": <true|false>,
       "throttle": <integer >= 0>
+    }
+  ],
+  "scenes": [
+    {
+      "cut": "<what the story skips here>",
+      "start": <message id where the scene begins>,
+      "title": "<short label>",
+      "when": "<when it happens, as the story says it>",
+      "where": "<where it happens>",
+      "who": ["<names of those in it>"],
+      "line": "<one line: what happened>",
+      "keys": ["<words distinctive to this scene: its place, event or object>"],
+      "facts": [ { "text": "<what happened, and why it matters>", "section": "what" | "why", "messages": [<ids>] } ],
+      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
     }
   ]
 }`;
 
 export const FIELD_GUIDE = `Fields:
-- scenes: every point where the story cuts to a new scene: a jump in time, or a jump to a different place or situation. The first scene starts at 0. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. A message that picks up where the previous one left off (the same people carrying on what they were doing, with no time skipped) continues the scene, even when they move somewhere else: room to room, out of a building, down a tunnel, onto a boat. Only a cut starts a new one. For each scene after the first, first say in cut what the story skips there: time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header that opens a new scene. If you can't name one, it isn't a new scene; leave it out.
+- scenes: every point where the story cuts to a new scene (the first scene starts at 0; give it too, with its details): a jump in time, or a jump to a different place or situation. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. A message that picks up where the previous one left off (the same people carrying on what they were doing, with no time skipped) continues the scene, even when they move somewhere else: room to room, out of a building, down a tunnel, onto a boat. Only a cut starts a new one. For each scene after the first, first say in cut what the story skips there: time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header that opens a new scene. If you can't name one, it isn't a new scene; leave it out.
+- A scene also becomes an entry of its own. For every scene give when, where, who, and line (one line on what happened); facts saying what happened and, in section "why", why it matters to the story; 1-3 quotes (the lines that capture the scene: every scene where anyone speaks has them); and 2-4 keys. A scene's keys are what is distinctive to that scene: its place, the event, an object that matters in it. Never use the main characters' names as a scene's keys, since they are in nearly every scene. Cite the messages of the scene.
 - name: the full name, e.g. "Captain Ada Marsh" -> "Ada Marsh".
-- keys: the exact strings the story uses for this entity: full name, short name, and any epithet or title used in place of the name, never a pronoun. A key names the entity itself, never something of its ("the captain's cabin" is a place, not a key for the captain). Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
-- facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. 1-5 facts of one short sentence each: be brief, so that every entity fits.
+- keys: the exact strings the story uses for this entity. Give distinct triggers: the name, nicknames and short forms, titles and role nouns the story actually uses for it ("the witch", "mistress", "apprentice"), never a pronoun. A longer form of a key you already give ("Morgana Veni" beside "Morgana") adds no trigger: leave it out. A key names the entity itself, never something of its ("the captain's cabin" is a place, not a key for the captain). Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
+- main: true for a main character: one the story follows through many scenes. Everyone else is false.
+- facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. How much to write scales with how much the story gives the entity:
+  - a main character gets a full profile: at least 1,000 characters even in a short story (aim for 1,500 to 2,500), more once the story gives the material, growing as scenes pile up. Count: the facts of a main character's profile add up to well over a thousand characters, and are never a few lines. One fact per section is too thin: give each section the story supports two to five facts, each a full sentence with the concrete detail (what was said or done, where, with whom), not a summary. Tag each fact with a section: "appearance" (looks, dress, manner), "personality" (how they think and act), "voice" (how they speak: habits, phrasing), "relationships" (one fact per person that matters to them: what they are to each other and how it has changed), "history" (what has happened to them, in story order, with where and when). Facts here may run to two or three sentences, and a profile has many of them.
+  - a character who recurs but isn't a main character gets 3-6 facts; a place, object, group or event gets 2-5 facts, longer if the story keeps returning to it. A passing minor character gets one or two short facts.
+- quotes: a main character always has 2-4 lines that show how they talk (never none); for others, one quote only where a line matters. Copy the words exactly as they appear in the message, character for character, with the id of that message. A quote that is not word for word in the message it cites is thrown away, so never paraphrase or tidy one. Quote a whole sentence or more of speech (at least two words), never a fragment, and choose lines that show the character: how they bargain, threaten, joke or give way.
 - caseSensitive: true when one of its keys is also an ordinary word the story uses in lowercase with another meaning (a person named after a bird or a colour), so only the capitalised form should trigger it.
 - cascade: true when the entry's text should be allowed to trigger other entries it mentions. Use false only for broad entries that mention almost everything.
 - throttle: messages to wait after the entry fires before it may fire again. 0 for nearly everything.`;
@@ -46,11 +66,13 @@ export function renderTranscript(messages, changed = new Set()) {
 /** Rough reply cost of one entity, used to tell the model how much room it has. */
 export const TOKENS_PER_ENTITY = 300;
 
+const ROOM = (room) => `Your reply has room for about ${room} ordinary entities; a main character's profile and a scene entry each take several. Depth is in addition to breadth, never instead of it: every entity the rules call for (every named character, place, object, event, group and thread) still gets an entry, besides the main characters' profiles and a scene entry for every scene. A long story has dozens of entities. List all the entities first, then the scenes. Don't leave out a qualifying entity or shorten a profile to save space.`;
+
 export function buildPrompt(messages, outputTokens) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
     return {
         system: SYSTEM,
-        user: `${FIELD_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\nYour reply has room for about ${room} entities. Use what the story needs and no more, but don't leave out a qualifying entity to save space.\n\nThe transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<transcript>\n${renderTranscript(messages)}\n</transcript>`,
+        user: `${FIELD_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\nThe transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<transcript>\n${renderTranscript(messages)}\n</transcript>`,
     };
 }
 
@@ -66,7 +88,9 @@ export const PART_SYSTEM = `You build a lorebook for a roleplay story too long t
 /** A known entity, for a prompt: name, keys, and (unless `brief`) its facts. */
 function rosterLine(e, brief) {
     const keys = e.keys.length ? ` (keys: ${e.keys.join('; ')})` : '';
-    return `- ${e.name}${keys}${brief ? '' : e.facts.map((f) => `\n  kept: ${f.text}`).join('')}`;
+    const scene = e.kind === 'scene' ? ` [scene starting at message ${e.start}]` : e.main ? ' [main character]' : '';
+    const said = e.quotes?.length ? `\n  quotes kept: ${e.quotes.length}` : '';
+    return `- ${e.name}${scene}${keys}${brief ? '' : e.facts.map((f) => `\n  kept${f.section ? ` (${f.section})` : ''}: ${f.text}`).join('') + said}`;
 }
 
 export function renderRoster(known, { brief = false } = {}) {
@@ -99,11 +123,11 @@ export function buildPartPrompt(messages, { part, from, to, context, known, brie
     const guide = `This is part ${part}: messages ${from} to ${to} of ${messages.length}. ${part > 1 ? '<known_entities> lists what the earlier parts found.' : 'It is the first part.'}${context ? ` Messages ${context[0]} to ${context[1]}, in <context>, end the previous part; they are there so you can follow the story across the cut, and were already read.` : ''}${next == null ? ' It is the last part.' : ` Message ${next}, in <next_part_starts>, begins the next part.`}
 Report:
 - scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
-- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
+- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover, in the same sections, and add quotes only if you can give new ones. A known entity that becomes a main character: say main true. A scene already listed under <known_entities> is reported by its listed name and start only if this part continues it. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
 - Every fact must cite messages from ${from} to ${to}. Report nothing from <context> or <next_part_starts> but scene starts.`;
     return {
         system: PART_SYSTEM,
-        user: `${FIELD_GUIDE}\n\n${guide}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\nYour reply has room for about ${room} entities. Use what the story needs and no more, but don't leave out a qualifying entity to save space.\n\n<known_entities>\n${renderRoster(known, { brief }) || '(none yet)'}\n</known_entities>\n\n${ctx}<part from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</part>${after}`,
+        user: `${FIELD_GUIDE}\n\n${guide}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\n<known_entities>\n${renderRoster(known, { brief }) || '(none yet)'}\n</known_entities>\n\n${ctx}<part from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</part>${after}`,
     };
 }
 
@@ -151,6 +175,6 @@ export function buildUpdatePrompt(messages, windows, known, previous, changed, o
         .join('\n\n');
     return {
         system: UPDATE_SYSTEM,
-        user: `${FIELD_GUIDE}\n\n${UPDATE_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\nYour reply has room for about ${room} entities.\n\nThe whole transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<known_entities>\n${roster || '(none)'}\n</known_entities>\n\n<previous_facts>\n${prior || '(none)'}\n</previous_facts>\n\n<passages>\n${passages}\n</passages>`,
+        user: `${FIELD_GUIDE}\n\n${UPDATE_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\nThe whole transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<known_entities>\n${roster || '(none)'}\n</known_entities>\n\n<previous_facts>\n${prior || '(none)'}\n</previous_facts>\n\n<passages>\n${passages}\n</passages>`,
     };
 }

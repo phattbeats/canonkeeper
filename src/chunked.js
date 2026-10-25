@@ -100,15 +100,15 @@ function absorb(canon, found, from, to, review, renamed, read = to) {
     for (const e of canon) for (const k of e.keys) own(k, e);
     for (const f of found) {
         const facts = f.facts
-            .map((x) => ({ text: x.text, messages: x.messages.filter((id) => id >= from && id <= to) }))
+            .map((x) => ({ ...x, messages: x.messages.filter((id) => id >= from && id <= to) }))
             .filter((x) => x.messages.length);
         // A fact from the handed-over scene (to, read] is the next part's to report.
         const outside = f.facts.filter((x) => !x.messages.some((id) => id >= from && id <= read)).length;
         if (outside) review.push({ name: f.name, reason: `${outside} fact(s) cited only messages outside part ${from}-${to}; left out` });
         if (!facts.length) continue;
         const owners = keyOwners.get(fold(f.name)) ?? [];
-        let e = byName.get(fold(f.name)) ?? (owners.length === 1 ? owners[0] : null);
-        const named = e ? [] : [...new Set(f.keys.map((k) => byName.get(fold(k))).filter(Boolean))];
+        let e = byName.get(fold(f.name)) ?? (f.kind === 'scene' ? canon.find((x) => x.kind === 'scene' && x.start === f.start) : null) ?? (owners.length === 1 ? owners[0] : null);
+        const named = e || f.kind === 'scene' ? [] : [...new Set(f.keys.map((k) => byName.get(fold(k))).filter(Boolean))];
         if (named.length === 1) {
             e = named[0];
             byName.delete(fold(e.name));
@@ -119,10 +119,11 @@ function absorb(canon, found, from, to, review, renamed, read = to) {
             byName.set(fold(e.name), e);
         }
         if (!e) {
-            e = { ...f, keys: [], facts: [] };
+            e = { ...f, keys: [], facts: [], quotes: [] };
             canon.push(e);
             byName.set(fold(e.name), e);
         } else {
+            for (const field of ['main', 'where', 'when', 'who', 'line']) if (f[field] != null) e[field] = f[field];
             e.caseSensitive ||= f.caseSensitive;
             e.cascade &&= f.cascade;
             e.throttle = Math.max(e.throttle, f.throttle);
@@ -133,6 +134,8 @@ function absorb(canon, found, from, to, review, renamed, read = to) {
             own(k, e);
         }
         addFacts(e, facts);
+        // A quote must come from the part, like a fact; the verbatim check is compile's.
+        for (const q of f.quotes ?? []) if (q.message >= from && q.message <= to && !(e.quotes ??= []).some((x) => x.text === q.text)) e.quotes.push(q);
     }
 }
 
@@ -140,7 +143,7 @@ function addFacts(e, facts) {
     for (const fact of facts) {
         const same = e.facts.find((x) => fold(x.text) === fold(fact.text));
         if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((a, b) => a - b);
-        else e.facts.push({ text: fact.text, messages: [...fact.messages] });
+        else e.facts.push({ text: fact.text, messages: [...fact.messages], ...(fact.section ? { section: fact.section } : {}) });
     }
 }
 
@@ -150,26 +153,30 @@ function addFacts(e, facts) {
  * the review list says so. Returns the record kept in the ledger.
  */
 async function reconcile(canon, generate, budget, messageCount, review) {
-    if (canon.length < 2) return { ran: false, reason: 'fewer than two entities' };
+    // Scenes are told apart by where they start; only the rest can be one entity twice.
+    const people = canon.filter((e) => e.kind !== 'scene');
+    if (people.length < 2) return { ran: false, reason: 'fewer than two entities' };
     const output = Math.min(budget.output, RECONCILE_OUTPUT);
     const input = budget.contextTokens - output;
     let brief = false;
-    let prompt = buildReconcilePrompt(canon);
-    if (estimateTokens(prompt.system + prompt.user) > input) prompt = buildReconcilePrompt(canon, { brief: (brief = true) });
+    let prompt = buildReconcilePrompt(people);
+    if (estimateTokens(prompt.system + prompt.user) > input) prompt = buildReconcilePrompt(people, { brief: (brief = true) });
     const needed = estimateTokens(prompt.system + prompt.user);
     if (needed > input) {
         review.push({ name: '(reconciliation)', reason: `the entity list needs ~${needed} prompt tokens but only ${input} fit; the parts were not reconciled` });
         return { ran: false, reason: 'entity list does not fit the window', promptEstimate: needed };
     }
-    const reply = await ask(generate, prompt, output, messageCount, (text) => readMerges(text, canon));
+    const reply = await ask(generate, prompt, output, messageCount, (text) => readMerges(text, people));
     review.push(...reply.review);
-    const byName = new Map(canon.map((e) => [e.name, e]));
+    const byName = new Map(people.map((e) => [e.name, e]));
     for (const { keep, same } of reply.merges) {
         const into = byName.get(keep);
         for (const name of same) {
             const e = byName.get(name);
             for (const k of [...e.keys, e.name]) if (!into.keys.some((x) => fold(x) === fold(k))) into.keys.push(k);
             addFacts(into, e.facts);
+            for (const q of e.quotes ?? []) if (!(into.quotes ??= []).some((x) => x.text === q.text)) into.quotes.push(q);
+            into.main ||= e.main;
             into.caseSensitive ||= e.caseSensitive;
             into.cascade &&= e.cascade;
             into.throttle = Math.max(into.throttle, e.throttle);

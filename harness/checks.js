@@ -45,6 +45,13 @@
 //       it working the prompt is that one plus one message holding the picked
 //       entries, none already in it, within the entry count and token budget
 //       (opt-in: for an extras run)
+//   D17 deep entries, on a run built with scene entries: every scene in the
+//       answer key has a scene entry with a verified quote, a place and a
+//       time, and the Timeline lists every scene entry (opt-in: --deep)
+//   D18 every main character in the key has an entry of at least 1,000
+//       characters with at least two verified quotes (opt-in: --deep)
+//   D19 no entry keeps a key that only repeats another of its own keys in a
+//       longer form (opt-in: --deep)
 //   X16 a clip that fails writes nothing and leaves the prompt as it was; one
 //       that works adds one entry, changes no other, and /canon then makes no
 //       write and holds it (opt-in: for an extras run)
@@ -100,7 +107,7 @@ export function checkI2ZeroKeyEntries(book) {
     const name = 'no entry with zero keys';
     const live = enabled(book);
     if (!live.length) return emptyFail('I2', name);
-    const offenders = live.filter((e) => e.keys.length === 0).map((e) => ({ uid: e.uid, title: e.title }));
+    const offenders = live.filter((e) => e.keys.length === 0 && !e.constant).map((e) => ({ uid: e.uid, title: e.title }));
     return result('I2', name, offenders.length === 0, { offenders });
 }
 
@@ -112,7 +119,7 @@ export function checkI3OverbroadKeys(book, messages, { maxFireFraction = THRESHO
     if (!live.length) return emptyFail('I3', name);
     const offenders = [];
     for (const e of live) {
-        const probes = e.constant ? [{ key: '(constant)', fires: () => true }] : e.keys.map((k) => ({ key: k, fires: (t) => keyFires(k, e, t) }));
+        const probes = e.constant && e.kind !== 'timeline' ? [{ key: '(constant)', fires: () => true }] : e.keys.map((k) => ({ key: k, fires: (t) => keyFires(k, e, t) }));
         for (const p of probes) {
             const fraction = messages.filter((m) => p.fires(m.text)).length / messages.length;
             if (fraction > maxFireFraction) offenders.push({ uid: e.uid, key: p.key, fraction: +fraction.toFixed(3) });
@@ -139,7 +146,7 @@ export function checkI4Provenance(book, messages) {
             offenders.push({ uid: e.uid, problem: 'source out of range or malformed', ranges: bad });
             continue;
         }
-        const grounded = e.sources.some(([a, b]) => messages.slice(a, b + 1).some((m) => entryFires(e, m.text)));
+        const grounded = e.constant || e.sources.some(([a, b]) => messages.slice(a, b + 1).some((m) => entryFires(e, m.text)));
         if (!grounded) offenders.push({ uid: e.uid, problem: 'no cited message mentions any of its keys', ranges: e.sources });
     }
     return result('I4', name, offenders.length === 0, { offenders });
@@ -558,4 +565,92 @@ export function checkX16Clip(x) {
     const fires = clip && c.working.firesInScan;
     if (fires && !promptText(c.working.prompt).includes(clip.content)) problems.push('the clip\'s key is in the last messages but its entry is not in the prompt');
     return result('X16', name, !problems.length, { clip: clip ? { uid: clip.uid, title: clip.comment, keys: clip.key } : null, firesInScan: !!fires, error: c.broken.error, problems });
+}
+
+// ── D17 / D18 / D19 ──────────────────────────────────────────────────────────
+
+/** Quotes compared the way a reader would: typography and spacing aside, word for word. */
+const flat = (s) =>
+    String(s)
+        .replace(/[\u2018\u2019\u201B]/g, "'")
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+/** The entry's quotes that are word for word in the message they cite and are in its text. */
+function verifiedQuotes(e, messages) {
+    return e.quotes.filter((q) => {
+        const m = messages[q.message];
+        return m && flat(q.text).split(' ').length >= 2 && flat(m.text).includes(flat(q.text)) && flat(e.content).includes(flat(q.text));
+    });
+}
+
+export function checkD17Scenes(book, messages, key, { tolerance = THRESHOLDS.boundaryTolerance } = {}) {
+    const name = 'every scene has an entry with a verified quote, a place and a time, and the Timeline lists them';
+    const scenes = enabled(book).filter((e) => e.kind === 'scene');
+    const timeline = enabled(book).find((e) => e.kind === 'timeline');
+    if (!scenes.length) return emptyFail('D17', name);
+    const starts = [0, ...key.boundaries];
+    const free = new Set(scenes);
+    const problems = [];
+    for (const s of starts) {
+        const e = [...free].filter((x) => Math.abs(x.start - s) <= tolerance).sort((a, b) => Math.abs(a.start - s) - Math.abs(b.start - s))[0];
+        if (!e) {
+            problems.push({ scene: s, problem: 'no scene entry' });
+            continue;
+        }
+        free.delete(e);
+        const missing = [];
+        if (!verifiedQuotes(e, messages).length) missing.push('a verified quote');
+        if (!/(^|\n|\s)Where: \S/.test(e.content)) missing.push('where');
+        if (!/(^|\n|\s)When: \S/.test(e.content)) missing.push('when');
+        if (missing.length) problems.push({ scene: s, uid: e.uid, missing });
+    }
+    if (!timeline) problems.push({ problem: 'no Timeline entry' });
+    else {
+        const lines = timeline.content.split('\n').filter((l) => l.trim());
+        if (!timeline.constant) problems.push({ problem: 'the Timeline is not constant' });
+        if (lines.length < scenes.length) problems.push({ problem: `the Timeline has ${lines.length} lines for ${scenes.length} scene entries` });
+    }
+    return result('D17', name, problems.length === 0, { scenes: starts.length, entries: scenes.length, problems });
+}
+
+export function checkD18MainCharacters(book, messages, key, { minChars = 1000, minQuotes = 2 } = {}) {
+    const name = `each main character has an entry of ${minChars}+ characters with ${minQuotes}+ verified quotes`;
+    const mains = key.entities.filter((e) => e.main);
+    if (!mains.length) return emptyFail('D18', name);
+    const problems = [];
+    for (const m of mains) {
+        const e = enabled(book).find((x) => x.title === m.name);
+        if (!e) {
+            problems.push({ entity: m.name, problem: 'no entry' });
+            continue;
+        }
+        const quotes = verifiedQuotes(e, messages).length;
+        if (e.content.length < minChars || quotes < minQuotes) problems.push({ entity: m.name, chars: e.content.length, verifiedQuotes: quotes });
+    }
+    return result('D18', name, problems.length === 0, { mains: mains.map((m) => m.name), problems });
+}
+
+export function checkD19RedundantKeys(book) {
+    const name = 'no entry keeps a key that only repeats another of its keys in a longer form';
+    const live = enabled(book).filter((e) => !e.constant);
+    if (!live.length) return emptyFail('D19', name);
+    const within = (short, long, cs) => {
+        const s = cs ? short : short.toLowerCase();
+        const l = cs ? long : long.toLowerCase();
+        if (s === l) return false;
+        if (/\s/.test(short)) return l.includes(s);
+        return l.split(/[^\p{L}\p{N}_]+/u).includes(s);
+    };
+    const offenders = [];
+    for (const e of live) {
+        const cs = e.caseSensitive ?? DEFAULTS.caseSensitive;
+        for (const long of e.keys) {
+            const short = e.keys.find((k) => within(k, long, cs));
+            if (short) offenders.push({ uid: e.uid, key: long, repeats: short });
+        }
+    }
+    return result('D19', name, offenders.length === 0, { offenders });
 }

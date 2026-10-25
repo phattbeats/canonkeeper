@@ -2,8 +2,8 @@
   "story": "The Saltwind Chart (invented for Canonkeeper's test suite; no real persons or chats)",
   "messageCount": 81,
   "entities": [
-    { "name": "Tamsin Dray", "type": "character", "required": true, "aliases": ["Tamsin"] },
-    { "name": "Mora Quill", "type": "character", "required": true, "aliases": ["Quill", "Captain Quill"] },
+    { "name": "Tamsin Dray", "type": "character", "required": true, "main": true, "aliases": ["Tamsin"] },
+    { "name": "Mora Quill", "type": "character", "required": true, "main": true, "aliases": ["Quill", "Captain Quill"] },
     { "name": "Oren Hale", "type": "character", "required": true, "caseSensitive": true, "aliases": ["Hale", "Captain Hale"] },
     { "name": "Wren", "type": "character", "required": true, "caseSensitive": true, "aliases": [], "decoys": [10, 30, 79] },
     { "name": "Ines Vell", "type": "character", "required": true, "aliases": ["Ines", "cartographer"] },
