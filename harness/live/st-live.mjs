@@ -21,7 +21,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 //   OUT_DIR       where evidence/<stamp>/ goes (default: .run/live)
 //   CONTEXT       the window typed into the panel (default 200000)
 //   DEEP          set (to anything) to also require scene entries and the
-//                 Timeline in the book the server holds (PHA-4527), and to
+//                 Timeline in the book the server holds, and to
 //                 run the gate with --deep (D17-D19). A real model's profiles
 //                 can fall short of D18's 1,000 characters, so read it
 //                 beside the book

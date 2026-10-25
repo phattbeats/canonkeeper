@@ -1,4 +1,4 @@
-// Every lorebook active for the chat (PHA-3971): the character card's books,
+// Every lorebook active for the chat: the character card's books,
 // global worlds and the persona book are read, never written. An entity one
 // of them already covers, by title or by one of its names as a key, gets no
 // Canonkeeper entry, and their keys win every contest.

@@ -1,4 +1,4 @@
-// Live run for PHA-4001 (audit progress): after /canon and a planted key clash, clicks Audit and times when the technical findings and the claim-check count show in the panel. Derived from st-audit.mjs, whose header follows.
+// Live run for audit progress: after /canon and a planted key clash, clicks Audit and times when the technical findings and the claim-check count show in the panel. Derived from st-audit.mjs, whose header follows.
 // Live acceptance run for Canonkeeper build step 6 (the audit), driven from
 // outside the page. A fresh SillyTavern is driven through browserless as a
 // user would: install from the repo URL, make two connection profiles (the

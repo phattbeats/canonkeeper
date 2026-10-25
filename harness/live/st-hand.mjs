@@ -1,4 +1,4 @@
-// Live acceptance run for fixing a flagged fact by hand (PHA-3999), driven
+// Live acceptance run for fixing a flagged fact by hand, driven
 // from outside the page. A fresh SillyTavern is driven through browserless as
 // a user would: install from the repo URL, make the writer and claim-checker
 // connection profiles, type /canon. Then three facts are given the wrong

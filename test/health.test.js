@@ -1,4 +1,4 @@
-// Health (PHA-4224): every live failure path is recorded in the chat's state,
+// Health: every live failure path is recorded in the chat's state,
 // raises a sticky notice once per new kind, shows while it lasts and clears at
 // the next success. The adapter's tick runs against the same fake
 // SillyTavern as live.test.js.

@@ -1,4 +1,4 @@
-// Live acceptance run for PHA-3971: every active lorebook is respected. As
+// Live acceptance run: every active lorebook is respected. As
 // st-live.mjs (fresh SillyTavern, install from the repo URL, a profile,
 // /canon twice with two pins between), but the chat has other books: the
 // character's own world, linked to the card (SillyTavern also embeds it in

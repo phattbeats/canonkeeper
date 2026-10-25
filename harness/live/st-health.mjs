@@ -1,4 +1,4 @@
-// Live acceptance run for failure visibility (PHA-4224), driven from outside
+// Live acceptance run for failure visibility, driven from outside
 // the page. A fresh SillyTavern, the extension installed from the repo URL,
 // a good connection profile and one that points at a proxy that isn't there.
 // Live mode is turned on with no profile (badge + sticky toast), then with a
