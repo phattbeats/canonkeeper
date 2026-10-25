@@ -4,7 +4,10 @@
 // does (without the edit fixtures), then a tally. One model call is
 // stochastic, so a live pass is k of n green runs, not one.
 //
-//   node harness/live-runs.js [--model claude-sonnet-5] [--n 10] [--pass 8] [--jobs 3] [--out .run/live-runs/<model>] [--json]
+//   node harness/live-runs.js [--model claude-sonnet-5] [--n 10] [--pass 8] [--jobs 3] [--out .run/live-runs/<model>] [--depth] [--deep] [--json]
+//
+// --depth builds in steps (scenes, the roster, sweeps, then profiles and
+// scene write-ups); --deep also gates D17-D19 (scene entries, profiles, keys).
 //
 // Each run directory is <out>/<i>; the summary is <out>/summary.json.
 // Exit codes: 0 at least --pass runs green · 1 fewer
@@ -39,13 +42,13 @@ function pinTitle(dir) {
     return titles.find((t) => fold(t) === fold('Brother Saul')) ?? titles.find((t) => fold(t).includes('saul')) ?? titles[0];
 }
 
-async function one(model, dir) {
+async function one(model, dir, { depth, deep }) {
     const started = Date.now();
     try {
-        await sh(['build', transcript, '--out', dir, '--model', model]);
+        await sh(['build', transcript, '--out', dir, '--model', model, ...(depth ? ['--depth'] : [])]);
         await sh(['pin', dir, pinTitle(dir)]);
         await sh(['rerun', transcript, '--run', dir]);
-        const g = runGate({ storyDir: story, runDir: dir });
+        const g = runGate({ storyDir: story, runDir: dir, deep });
         const c7 = g.checks.find((c) => c.id === 'C7').detail;
         const c8 = g.checks.find((c) => c.id === 'C8').detail;
         const scenes = JSON.parse(readFileSync(join(dir, 'scenes.json'), 'utf8')).boundaries;
@@ -54,6 +57,7 @@ async function one(model, dir) {
             ok: g.ok,
             red: g.checks.filter((c) => !c.ok && c.gates !== false).map((c) => c.id),
             entries: g.entries,
+            checks: Object.fromEntries(g.checks.map((c) => [c.id, c.ok])),
             missed: c7.missed,
             extra: c7.extra.map((e) => e.title),
             precision: c7.precision,
@@ -67,7 +71,7 @@ async function one(model, dir) {
 }
 
 function parseArgs(argv) {
-    const args = { model: 'claude-sonnet-5', n: 10, pass: 8, jobs: 3, out: null, json: false };
+    const args = { model: 'claude-sonnet-5', n: 10, pass: 8, jobs: 3, out: null, json: false, depth: false, deep: false };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--model') args.model = argv[++i];
@@ -76,6 +80,8 @@ function parseArgs(argv) {
         else if (a === '--jobs') args.jobs = Number(argv[++i]);
         else if (a === '--out') args.out = argv[++i];
         else if (a === '--json') args.json = true;
+        else if (a === '--depth') args.depth = true;
+        else if (a === '--deep') args.deep = true;
         else throw new Error(`unknown option ${a}`);
     }
     args.out ??= join('.run/live-runs', args.model);
@@ -90,17 +96,18 @@ async function main() {
     const worker = async () => {
         while (next <= args.n) {
             const i = next++;
-            const r = await one(args.model, join(args.out, String(i)));
+            const r = await one(args.model, join(args.out, String(i)), args);
             runs[i - 1] = r;
             if (!args.json) console.log(`run ${i}: ${r.ok ? 'green' : `red ${r.red.join(',')}`}${r.missed?.length ? ` · missed ${r.missed.join(', ')}` : ''}${r.extra?.length ? ` · extra ${r.extra.join(', ')}` : ''}${r.boundaries ? ` · scenes ${r.boundaries.join(' ')}` : ''}${r.error ? ` · ${r.error}` : ''} (${r.seconds}s)`);
         }
     };
     await Promise.all(Array.from({ length: Math.min(args.jobs, args.n) }, worker));
     const green = runs.filter((r) => r.ok).length;
-    const summary = { model: args.model, n: args.n, pass: args.pass, green, ok: green >= args.pass, runs };
+    const every = (ids) => runs.filter((r) => ids.every((id) => r.checks?.[id] === true)).length;
+    const summary = { model: args.model, depth: args.depth, deep: args.deep, d17: every(['D17']), d18: every(['D18']), invariants: every(['I1', 'I2', 'I3', 'I4', 'I5', 'I6']), n: args.n, pass: args.pass, green, ok: green >= args.pass, runs };
     writeFileSync(join(args.out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
     if (args.json) console.log(JSON.stringify(summary, null, 2));
-    else console.log(`${args.model}: ${green} of ${args.n} green, pass needs ${args.pass} -> ${summary.ok ? 'PASS' : 'FAIL'}`);
+    else console.log(`${args.model}: D17 green ${summary.d17}, D18 green ${summary.d18}, I1-I6 green in ${summary.invariants} of ${args.n} runs\n${args.model}: ${green} of ${args.n} green, pass needs ${args.pass} -> ${summary.ok ? 'PASS' : 'FAIL'}`);
     process.exit(summary.ok ? 0 : 1);
 }
 

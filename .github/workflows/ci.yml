@@ -33,7 +33,9 @@ jobs:
             fixtures/story/live/write-replies.json \
             fixtures/story/audit/plant.json \
             fixtures/story/audit/verify-clean.json \
-            fixtures/story/audit/verify-planted.json
+            fixtures/story/audit/verify-planted.json \
+            fixtures/story/deep/replies.json \
+            fixtures/story/deep/two-step.json
 
       # The gate steps below run even if the tests fail, so each signal is
       # reported on its own.
@@ -90,6 +92,18 @@ jobs:
           node harness/gate.js --story fixtures/story --run .run/audit-blind --audit
           code=$?
           if [ "$code" -ne 1 ]; then echo "expected exit 1 (red), got $code"; exit 1; fi
+
+      # Deep entries: profiles, verified quotes, scene entries and the
+      # Timeline (D17-D19), replayed from one reply, and again from the
+      # two-step build's replies (scenes, roster, sweep, then the main
+      # characters and scenes in batches).
+      - name: Gate on a deep build must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:deep
+
+      - name: Gate on a two-step deep build must be green
+        if: ${{ !cancelled() }}
+        run: npm run build:steps
 
       # K10 has to be able to fail: the one-shot run above must not pass as
       # chunked. Exit 1 (red) is required.

@@ -59,8 +59,26 @@ function main() {
         const o = old.get(r.title.toLowerCase());
         console.log(`| ${r.title}${r.kind === 'entity' ? '' : ` (${r.kind})`} | ${o ? o.chars : '–'} | ${r.chars} | ${r.quotes} | ${o ? o.keys : '–'} | ${r.keys} |`);
     }
-    const gone = before.rows.filter((r) => !after.rows.some((x) => x.title.toLowerCase() === r.title.toLowerCase()));
-    if (gone.length) console.log(`\nIn the old book only: ${gone.map((r) => r.title).join('; ')}`);
+    // Breadth: each old entity is present (its name, or a key of it, is a new
+    // entry's title or key), named in another entry's text, or absent.
+    const bare = (x) => String(x).toLowerCase().replace(/^the /, '').replace(/['’]s$/, '').trim();
+    const oldBook = loadBook(a);
+    const fresh = loadBook(b).filter((e) => !e.kind || !['scene', 'timeline'].includes(e.kind));
+    const names = new Set(fresh.flatMap((e) => [e.title, ...e.keys]).map(bare));
+    const text = loadBook(b).map((e) => e.content.toLowerCase()).join('\n');
+    const present = [];
+    const inText = [];
+    const absent = [];
+    for (const e of oldBook) {
+        const ids = [e.title, ...e.keys].map(bare);
+        if (ids.some((i) => names.has(i))) present.push(e.title);
+        else if (ids.some((i) => i.length > 3 && text.includes(i))) inText.push(e.title);
+        else absent.push(e.title);
+    }
+    console.log(`\nNon-scene entities: ${before.rows.length} before, ${fresh.length} after.`);
+    console.log(`Old entities present by name or alias: ${present.length} of ${oldBook.length}.`);
+    if (inText.length) console.log(`Named only inside other entries: ${inText.join('; ')}`);
+    if (absent.length) console.log(`Absent: ${absent.join('; ')}`);
 }
 
 main();

@@ -52,6 +52,7 @@ function parseArgs(argv) {
         else if (a === '--context') args.context = Number(argv[++i]);
         else if (a === '--output-share') args.outputShare = Number(argv[++i]);
         else if (a === '--dry-run') args.dryRun = true;
+        else if (a === '--depth') args.depth = true;
         else if (a === '--no-verify') args.noVerify = true;
         else if (a === '--recheck') args.recheck = true;
         else if (a === '--recite') args.recite = true;
@@ -83,7 +84,7 @@ async function main() {
         mkdirSync(args.dir, { recursive: true });
         let out;
         try {
-            out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context, outputShare: args.outputShare });
+            out = await build({ messages, generate: recording(model(args), replies), contextTokens: args.context, outputShare: args.outputShare, depth: args.depth });
         } finally {
             // Kept even when the run fails, so a rejected reply can be inspected.
             writeJson(join(args.dir, 'replies.json'), replies);
@@ -128,6 +129,7 @@ async function main() {
             generate: recording(model(args), replies),
             contextTokens: args.context,
             outputShare: args.outputShare,
+            depth: args.depth,
         });
         console.log(`${out.plan.length} write(s), ${out.calls} model call(s), ${out.held.length} entr${out.held.length === 1 ? 'y' : 'ies'} held`);
         for (const line of describe(out.plan)) console.log(`  ${line}`);

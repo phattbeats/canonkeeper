@@ -24,10 +24,12 @@
 // that the book was built in parts, and how.
 
 import { estimateTokens, TooLongError } from './budget.js';
-import { buildPartPrompt, buildReconcilePrompt, renderRoster, sceneRange } from './prompt.js';
+import { buildPartPrompt, buildSweepPrompt, buildReconcilePrompt, renderRoster, sceneRange } from './prompt.js';
 import { readMerges } from './parse.js';
 import { compile } from './compile.js';
 import { ask, toBook, makeLedger } from './build.js';
+import { absorb, addFacts } from './canon.js';
+import { deepen, askBreadth } from './deepen.js';
 
 const fold = (s) => s.toLowerCase();
 
@@ -66,10 +68,10 @@ function contextFor(messages, from, scenes, input) {
  * The longest part from `from` whose whole prompt fits the window. Throws
  * TooLongError when not even one message fits beside the roster.
  */
-function sizePart(messages, from, part, known, scenes, budget) {
+function sizePart(messages, from, part, known, scenes, budget, depth) {
     const brief = estimateTokens(renderRoster(known)) > budget.input * ROSTER_SHARE;
     const context = contextFor(messages, from, scenes, budget.input);
-    const prompt = (to) => buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens: budget.output });
+    const prompt = (to) => buildPartPrompt(messages, { part, from, to, context, known: depth ? known.filter((e) => e.kind !== 'scene') : known, brief, outputTokens: budget.output, depth, focus: 'entities' });
     const fixed = prompt(from - 1);
     let left = budget.input - estimateTokens(fixed.system + fixed.user) - 50; // 50: the ids in the header grow
     let to = from - 1;
@@ -82,69 +84,6 @@ function sizePart(messages, from, part, known, scenes, budget) {
     }
     const one = prompt(from);
     throw new TooLongError(estimateTokens(one.system + one.user), budget.input);
-}
-
-/**
- * Folds one part's reply into the canon. A known entity is matched by name,
- * or failing that by a key only it holds, and gains new keys and facts; a
- * fact it already has gains the new sources. A new name that lists exactly
- * one known entity's name among its keys is that entity, now properly named:
- * it takes the new name and keeps the old one as a key. A fact must cite the
- * part itself: the model saw nothing else, so a citation outside it is a
- * guess.
- */
-function absorb(canon, found, from, to, review, renamed, read = to) {
-    const byName = new Map(canon.map((e) => [fold(e.name), e]));
-    const keyOwners = new Map();
-    const own = (k, e) => keyOwners.set(fold(k), [...new Set([...(keyOwners.get(fold(k)) ?? []), e])]);
-    for (const e of canon) for (const k of e.keys) own(k, e);
-    for (const f of found) {
-        const facts = f.facts
-            .map((x) => ({ ...x, messages: x.messages.filter((id) => id >= from && id <= to) }))
-            .filter((x) => x.messages.length);
-        // A fact from the handed-over scene (to, read] is the next part's to report.
-        const outside = f.facts.filter((x) => !x.messages.some((id) => id >= from && id <= read)).length;
-        if (outside) review.push({ name: f.name, reason: `${outside} fact(s) cited only messages outside part ${from}-${to}; left out` });
-        if (!facts.length) continue;
-        const owners = keyOwners.get(fold(f.name)) ?? [];
-        let e = byName.get(fold(f.name)) ?? (f.kind === 'scene' ? canon.find((x) => x.kind === 'scene' && x.start === f.start) : null) ?? (owners.length === 1 ? owners[0] : null);
-        const named = e || f.kind === 'scene' ? [] : [...new Set(f.keys.map((k) => byName.get(fold(k))).filter(Boolean))];
-        if (named.length === 1) {
-            e = named[0];
-            byName.delete(fold(e.name));
-            if (!e.keys.some((x) => fold(x) === fold(e.name))) e.keys.push(e.name);
-            own(e.name, e);
-            renamed.push({ from: e.name, to: f.name });
-            e.name = f.name;
-            byName.set(fold(e.name), e);
-        }
-        if (!e) {
-            e = { ...f, keys: [], facts: [], quotes: [] };
-            canon.push(e);
-            byName.set(fold(e.name), e);
-        } else {
-            for (const field of ['main', 'where', 'when', 'who', 'line']) if (f[field] != null) e[field] = f[field];
-            e.caseSensitive ||= f.caseSensitive;
-            e.cascade &&= f.cascade;
-            e.throttle = Math.max(e.throttle, f.throttle);
-        }
-        for (const k of f.keys) {
-            if (e.keys.some((x) => fold(x) === fold(k))) continue;
-            e.keys.push(k);
-            own(k, e);
-        }
-        addFacts(e, facts);
-        // A quote must come from the part, like a fact; the verbatim check is compile's.
-        for (const q of f.quotes ?? []) if (q.message >= from && q.message <= to && !(e.quotes ??= []).some((x) => x.text === q.text)) e.quotes.push(q);
-    }
-}
-
-function addFacts(e, facts) {
-    for (const fact of facts) {
-        const same = e.facts.find((x) => fold(x.text) === fold(fact.text));
-        if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((a, b) => a - b);
-        else e.facts.push({ text: fact.text, messages: [...fact.messages], ...(fact.section ? { section: fact.section } : {}) });
-    }
 }
 
 /**
@@ -191,7 +130,7 @@ async function reconcile(canon, generate, budget, messageCount, review) {
  * this when the story doesn't fit; `ledger.chunked` records the parts and the
  * reconciliation, so the result is never taken for a one-shot build.
  */
-export async function buildChunked({ messages, generate, budget, pinned = [], foreign = [], uids, nextUid }) {
+export async function buildChunked({ messages, generate, budget, pinned = [], foreign = [], uids, nextUid, depth = false }) {
     const canon = [];
     const scenes = new Set();
     const review = [];
@@ -201,8 +140,18 @@ export async function buildChunked({ messages, generate, budget, pinned = [], fo
     const counted = (req) => (calls++, generate(req));
 
     for (let from = 0, part = 1; from < messages.length; part++) {
-        const { to, context, brief, prompt, needed } = sizePart(messages, from, part, canon, scenes, budget);
-        const reply = await ask(counted, prompt, budget.output, messages.length);
+        const { to, context, brief, prompt, needed } = sizePart(messages, from, part, canon, scenes, budget, depth);
+        const reply = depth
+            ? await askBreadth(
+                  counted,
+                  { scenes: buildPartPrompt(messages, { part, from, to, context, known: canon, brief: true, outputTokens: budget.output, depth, focus: 'scenes' }), entities: prompt,
+                      sweep: (a, b, known) => buildSweepPrompt(messages, { from: a, to: b, known, outputTokens: budget.output }),
+                  },
+                  budget.output,
+                  messages.length,
+                  { messages, from, to, known: canon.filter((e) => e.kind !== 'scene') },
+              )
+            : await ask(counted, prompt, budget.output, messages.length);
         // The last scene, unless it started early in the part, goes to the next part.
         const handover = to + 1 < messages.length ? Math.max(-1, ...reply.scenes.filter((s) => s > from + (to - from) * HANDOVER_AFTER && s <= to)) : -1;
         const end = handover > 0 ? handover - 1 : to;
@@ -210,6 +159,7 @@ export async function buildChunked({ messages, generate, budget, pinned = [], fo
         for (const s of reply.scenes) if (s >= s0 && s <= s1) scenes.add(s);
         review.push(...reply.review);
         absorb(canon, reply.entities, from, end, review, renamed, to);
+        if (depth) await deepen({ messages, canon, from, to: end, starts: scenes, generate: counted, budget, review, renamed });
         parts.push({ part, from, to: end, ...(end < to ? { read: to } : {}), context, promptEstimate: needed, ...(brief ? { brief } : {}) });
         from = end + 1;
     }

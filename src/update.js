@@ -195,14 +195,14 @@ function merge(canon, found, previous, fresh, review, renamed) {
  * pinned entry, every clip and every entry Canonkeeper didn't write held, and entries
  * kept on their uids by title. Then the same diff as any other run.
  */
-async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign }) {
+async function rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign, depth }) {
     const entries = Object.values(book.entries);
     const held = entries.filter((e) => e.canonkeeper?.pinned || e.canonkeeper?.clip || !e.canonkeeper);
     const uids = new Map(entries.map((e) => [fold(e.comment ?? ''), e.uid]));
     const nextUid = Math.max(-1, ...entries.map((e) => e.uid)) + 1;
     let calls = 0;
     const counted = (req) => (calls++, generate(req));
-    const fresh = await build({ messages, generate: counted, contextTokens, maxOutputTokens, outputShare, pinned: held, foreign, uids, nextUid });
+    const fresh = await build({ messages, generate: counted, contextTokens, maxOutputTokens, outputShare, pinned: held, foreign, uids, nextUid, depth });
     const ops = plan(book, Object.values(fresh.book.entries));
     return {
         book: apply(book, ops),
@@ -226,10 +226,10 @@ async function rebuild({ book, messages, generate, contextTokens, maxOutputToken
  * list of writes made (empty means none), `held` the entries kept as they
  * were and why, `calls` the model calls made. The input book is not mutated.
  */
-export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare, starts, foreign = [] }) {
+export async function update({ book, ledger, messages, generate, contextTokens, maxOutputTokens, outputShare, starts, foreign = [], depth = false }) {
     if (!messages.length) throw new Error('empty transcript');
     if (ledger?.version !== LEDGER_VERSION) {
-        const out = await rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign });
+        const out = await rebuild({ book, messages, generate, contextTokens, maxOutputTokens, outputShare, foreign, depth });
         return starts ? withScenes(out, starts, messages.length) : out;
     }
 

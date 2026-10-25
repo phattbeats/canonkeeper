@@ -7,12 +7,13 @@
 // later, inside SillyTavern behind the adapter.
 
 import { planBudget, estimateTokens } from './budget.js';
-import { buildPrompt, retryPrompt } from './prompt.js';
+import { buildPrompt, buildSweepPrompt, retryPrompt } from './prompt.js';
 import { readReply, ModelOutputError } from './parse.js';
 import { compile } from './compile.js';
 import { fingerprint, messageHash } from './fingerprint.js';
 import { entryHash } from './plan.js';
 import { buildChunked } from './chunked.js';
+import { deepen, askBreadth } from './deepen.js';
 
 /** v2: the ledger holds the canon, message hashes and written-entry hashes. */
 export const LEDGER_VERSION = 2;
@@ -80,14 +81,18 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
  * are only read; `uids` and `nextUid` keep entities on the uids they had
  * (see compile).
  */
-export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], foreign = [], uids, nextUid }) {
+export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], foreign = [], uids, nextUid, depth = false }) {
     if (!messages.length) throw new Error('empty transcript');
     const budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
-    const prompt = buildPrompt(messages, budget.output);
+    const prompt = buildPrompt(messages, budget.output, { depth, focus: 'entities' });
     const needed = estimateTokens(prompt.system + prompt.user);
-    if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, foreign, uids, nextUid });
+    if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, foreign, uids, nextUid, depth });
 
-    const reply = await ask(generate, prompt, budget.output, messages.length);
+    const reply = depth
+        ? await askBreadth(generate, { scenes: buildPrompt(messages, budget.output, { depth, focus: 'scenes' }), entities: prompt, sweep: (from, to, known) => buildSweepPrompt(messages, { from, to, known, outputTokens: budget.output }) }, budget.output, messages.length, { messages, from: 0, to: messages.length - 1 })
+        : await ask(generate, prompt, budget.output, messages.length);
+    const review = [...reply.review];
+    if (depth) await deepen({ messages, canon: reply.entities, from: 0, to: messages.length - 1, starts: reply.scenes, generate, budget, review, renamed: [] });
     const compiled = compile(reply.entities, messages, { pinned, foreign, uids, nextUid });
     return {
         book: toBook(compiled.entries),
@@ -97,7 +102,7 @@ export async function build({ messages, generate, contextTokens, maxOutputTokens
             budget: { ...budget, promptEstimate: needed },
             scenes: reply.scenes,
             compiled,
-            review: [...reply.review, ...compiled.review],
+            review: [...review, ...compiled.review],
             revision: 1,
             held: pinned,
         }),

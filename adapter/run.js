@@ -25,6 +25,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     profileId: '',
     contextTokens: 200000,
     maxOutputTokens: 64000,
+    // A full build reads the story in separate steps (scenes, the entity roster,
+    // then the main characters and scenes in full): deeper entries and the
+    // whole roster, for more model calls. Off, it is one call.
+    depth: true,
     // Live mode: off until turned on. The detector's profile defaults to the
     // writer's; a cheap fast model is the point.
     live: false,
@@ -163,6 +167,7 @@ async function syncBook(st, { messages, ledger, starts, log }) {
         outputShare: st.settings.outputShare,
         starts,
         foreign,
+        depth: !!st.settings.depth,
     });
 
     if (st.currentChatId() !== st.chatId) throw new Error('the chat was switched during the run; nothing was written. Run /canon again');

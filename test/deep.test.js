@@ -1,4 +1,4 @@
-// Deep entries (PHA-4527): quotes checked word for word, redundant keys
+// Deep entries: quotes checked word for word, redundant keys
 // dropped, scene entries and the Timeline, profiles laid out whole, and the
 // replay gate on the fixture (D17–D19).
 
@@ -19,6 +19,7 @@ import { replay } from '../src/models/replay.js';
 import { runGate } from '../harness/gate.js';
 import { checkD17Scenes, checkD18MainCharacters, checkD19RedundantKeys } from '../harness/checks.js';
 import { normalizeEntry } from '../harness/load.js';
+import { sweepWindows, SWEEP_CHARS } from '../src/deepen.js';
 
 const STORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'story');
 const messages = parseTranscript(readFileSync(join(STORY, 'transcript.jsonl'), 'utf8'));
@@ -256,4 +257,139 @@ test('an update keeps scene entries, quotes and the Timeline; an edit to a quote
     // Everything else, scene entries included, is as it was.
     const sceneCount = (b) => Object.values(b.entries).filter((e) => e.canonkeeper.kind === 'scene').length;
     assert.equal(sceneCount(out.book), sceneCount(first.book));
+});
+
+// ── the two-step build ───────────────────────────────────────────
+
+const twoStep = JSON.parse(readFileSync(join(STORY, 'deep', 'two-step.json'), 'utf8'));
+const built2 = (replies = twoStep, extra = {}) => {
+    const sent = [];
+    const g = replay(replies);
+    return build({ messages, generate: async (req) => (sent.push(req), g(req)), contextTokens: 200000, depth: true, ...extra }).then((out) => ({ ...out, sent }));
+};
+
+test('two steps: the breadth call, then the depth batches (2 mains, then 3 scenes, per call)', async () => {
+    const { sent, ledger } = await built2();
+    assert.equal(sent.length, 3 + 2 + 3); // scenes, roster, one sweep; 4 mains in 2 calls, 8 scenes in 3 calls
+    assert.match(sent[0].user, /Entities are reported in a separate step/);
+    assert.ok(!/at least 1,000 characters/.test(sent[1].user), 'the roster call asks for no profiles');
+    assert.match(sent[1].user, /room for about \d+ entities/);
+    assert.match(sent[1].user, /leave "scenes" empty/);
+    assert.match(sent[2].user, /is not complete[\s\S]*<known_entities>[\s\S]*Tamsin Dray/);
+    assert.match(sent[3].user, /<to_write>[\s\S]*\[main character: write the profile\][\s\S]*Tamsin Dray/);
+    assert.match(sent[5].user, /<taken_keys>[\s\S]*Saltgate[\s\S]*<\/taken_keys>/);
+    assert.ok(!/taken_keys>/.test(sent[3].user.split('</to_write>')[1]), 'mains need no taken keys');
+    assert.match(sent[5].user, /scene start 0, title "The Drowned Lantern", span: messages 0 to \d+/);
+    assert.ok(ledger.review.every((r) => !/depth step/.test(r.reason)));
+});
+
+test('two steps: the same mains and scenes, in full, as the one-shot reply gives', async () => {
+    const one = await built();
+    const two = await built2();
+    const a = Object.values(one.book.entries).filter((e) => e.canonkeeper?.kind);
+    for (const e of Object.values(one.book.entries)) {
+        const o = Object.values(two.book.entries).find((x) => x.comment === e.comment);
+        assert.ok(o, `${e.comment} is in the two-step book`);
+        if (e.canonkeeper?.main || e.canonkeeper?.kind === 'scene') assert.equal(o.content, e.content, e.comment);
+    }
+    assert.equal(Object.keys(two.book.entries).length, Object.keys(one.book.entries).length);
+    assert.ok(a.length >= 9);
+});
+
+test('two steps: a depth batch that cannot be read costs that batch its depth, not the build', async () => {
+    const bad = [...twoStep];
+    const out = await built2([...bad.slice(0, 5), 'not json', 'still not json', ...bad.slice(6)]); // the first scene batch, twice
+    assert.ok(out.ledger.review.some((r) => /depth step's reply could not be used/.test(r.reason) && /The Drowned Lantern/.test(r.name)));
+    const lantern = Object.values(out.book.entries).find((e) => e.comment === 'Scene: The Drowned Lantern');
+    assert.ok(lantern, 'the scene is still an entry, at breadth');
+    assert.ok(Object.values(out.book.entries).some((e) => e.comment === 'Tamsin Dray'));
+});
+
+test('two steps: the depth step adds nothing it was not asked about', async () => {
+    const extra = JSON.parse(twoStep[3]);
+    extra.entities.push({ name: 'A Stranger', keys: ['stranger'], facts: [{ text: 'Walks in.', messages: [2] }] });
+    extra.entities.push({ name: 'Pell', keys: [], facts: [{ text: 'Not a main character.', messages: [2] }] });
+    const replies = [...twoStep];
+    replies[3] = JSON.stringify(extra);
+    const out = await built2(replies);
+    assert.ok(!Object.values(out.book.entries).some((e) => e.comment === 'A Stranger'));
+    assert.ok(!/Not a main character/.test(Object.values(out.book.entries).find((e) => e.comment === 'Pell').content));
+    assert.equal(out.ledger.review.filter((r) => /not asked about/.test(r.reason)).length, 2);
+});
+
+test('two steps: the sweep adds what the roster missed, not what it has, and only from its passage', async () => {
+    const sweep = (names, more = []) => JSON.stringify({ entities: [...names.map((n) => ent(n, [n.toLowerCase()], [2])), ...more], scenes: [] });
+    const replies = [...twoStep];
+    replies[2] = sweep(['Tariff', 'Lamp room'], [ent('Tamsin Dray', ['Tamsin'], [2]), ent('Cellar hatch', ['cellar hatch'], [9999])]);
+    const out = await built2(replies);
+    const titles = Object.values(out.book.entries).map((e) => e.comment);
+    for (const t of ['Tariff', 'Lamp room']) assert.ok(titles.includes(t), t);
+    assert.equal(titles.filter((t) => t === 'Tamsin Dray').length, 1, 'an entity already listed is not added again');
+    assert.ok(!titles.includes('Cellar hatch'), 'a fact citing nothing in the passage is no fact');
+    assert.match(out.sent[2].user, /<known_entities>[\s\S]*Tamsin Dray[\s\S]*<passage from="0" to="\d+">/);
+});
+
+test('sweep passages: cut at scene starts, never past the size, every message once', () => {
+    const msgs = Array.from({ length: 40 }, (_, id) => ({ id, name: 'N', text: 'x'.repeat(9000) }));
+    const starts = [8, 17, 21, 30];
+    const w = sweepWindows(msgs, 0, 39, starts);
+    assert.deepEqual(w.flat().filter((_, i) => i % 2 === 0).slice(1), w.slice(0, -1).map(([, b]) => b + 1), 'each window starts where the last ended');
+    assert.equal(w[0][0], 0);
+    assert.equal(w.at(-1)[1], 39);
+    for (const [a, b] of w) assert.ok((b - a + 1) * 9009 <= SWEEP_CHARS + 9009, `${a}-${b} is within the size`);
+    assert.ok(w.slice(1).every(([a]) => starts.includes(a) || msgs.slice(a - 6, a).length), 'cuts fall on scene starts when one is near');
+    assert.deepEqual(sweepWindows(msgs.slice(0, 3), 0, 2, []), [[0, 2]]);
+});
+
+// ── the two-step build, read in parts ───────────────────────────────────────
+
+/** A model that answers each kind of call from the one-shot deep reply, for the part the prompt names. */
+function partsModel() {
+    const full = JSON.parse(deep[0]);
+    const calls = [];
+    const inRange = (ids, a, b) => ids.filter((id) => id >= a && id <= b);
+    const trim = (facts, a, b) => facts.map((f) => ({ ...f, messages: inRange(f.messages, a, b) })).filter((f) => f.messages.length);
+    const generate = async ({ user }) => {
+        if (user.includes('"merges"')) return calls.push({ kind: 'reconcile' }), JSON.stringify({ merges: [] });
+        const m = /(?:part from|passage from)="(\d+)" to="(\d+)"/.exec(user) ?? /messages (\d+) to (\d+)/.exec(user);
+        const [a, b] = [Number(m[1]), Number(m[2])];
+        let kind;
+        let reply;
+        if (user.includes('<to_write>')) {
+            kind = 'depth';
+            const mains = full.entities.filter((e) => e.main && user.split('</to_write>')[0].includes(`- ${e.name} [main character`));
+            const scenes = full.scenes.filter((s) => user.includes(`scene start ${s.start},`));
+            reply = {
+                entities: mains.map((e) => ({ name: e.name, keys: [], facts: trim(e.facts, a, b), quotes: (e.quotes ?? []).filter((q) => q.message >= a && q.message <= b) })),
+                scenes: scenes.map((s) => ({ start: s.start, title: s.title, keys: [], facts: trim(s.facts.slice(1), a, b), quotes: (s.quotes ?? []).filter((q) => q.message >= a && q.message <= b) })),
+            };
+        } else if (user.includes('is not complete')) (kind = 'sweep'), (reply = { entities: [], scenes: [] });
+        else if (user.includes('Entities are reported in a separate step')) {
+            kind = 'scenes';
+            reply = { entities: [], scenes: full.scenes.filter((s) => s.start >= a && s.start <= b + 1).map(({ quotes, ...s }) => ({ ...s, facts: trim(s.facts.slice(0, 1), a, b + 1).length ? trim(s.facts.slice(0, 1), a, b + 1) : [{ text: s.line, messages: [s.start] }] })) };
+        } else {
+            kind = 'roster';
+            reply = { entities: full.entities.map(({ quotes, ...e }) => ({ ...e, facts: trim(e.facts.slice(0, 3), a, b) })).filter((e) => e.facts.length), scenes: [] };
+        }
+        calls.push({ kind, a, b });
+        return JSON.stringify(reply);
+    };
+    return { generate, calls };
+}
+
+test('two steps in parts: each part reads scenes, roster, sweep, then deepens what it holds; scenes and profiles survive', async () => {
+    const { generate, calls } = partsModel();
+    const out = await build({ messages, generate, contextTokens: 15200, outputShare: 0.5, depth: true });
+    const parts = out.ledger.chunked.parts;
+    assert.ok(parts.length >= 2, `read in ${parts.length} parts`);
+    for (const p of parts) {
+        const mine = calls.filter((c) => c.a >= p.from && c.b <= (p.read ?? p.to));
+        assert.deepEqual(mine.slice(0, 3).map((c) => c.kind), ['scenes', 'roster', 'sweep'], `part ${p.part} starts with the breadth step`);
+    }
+    assert.ok(calls.some((c) => c.kind === 'depth'));
+    assert.equal(calls.at(-1).kind, 'reconcile');
+    const entries = Object.values(out.book.entries);
+    assert.ok(entries.filter((e) => e.canonkeeper?.kind === 'scene').length >= 6, 'scene entries');
+    assert.ok(entries.some((e) => e.canonkeeper?.kind === 'timeline'));
+    for (const name of ['Tamsin Dray', 'Mora Quill']) assert.ok(titled(entries, name)?.content.length > 600, `${name} has a profile`);
 });

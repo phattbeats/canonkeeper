@@ -132,6 +132,7 @@ function stFor(c, s, profile) {
         settings: {
             contextTokens: Number(s.contextTokens),
             maxOutputTokens: Number(s.maxOutputTokens),
+            depth: s.depth !== false,
             outputShare: Number(s.outputShare) || undefined,
             cadence: Number(s.cadence),
             detectContextTokens: Number(s.detectContextTokens),
@@ -481,6 +482,10 @@ const html = `
         <div id="canonkeeper_audit" class="menu_button">Audit</div>
         <div id="canonkeeper_audit_recheck" class="menu_button" title="Ask the model about every claim again, even those whose claim and cited messages haven't changed">Re-check everything</div>
       </div>
+      <label class="checkbox_label" for="canonkeeper_depth">
+        <input id="canonkeeper_depth" type="checkbox">
+        <span>Build in steps: every entity, plus full profiles and scenes with quotes (several model calls instead of one)</span>
+      </label>
       <label class="checkbox_label" for="canonkeeper_audit_verify">
         <input id="canonkeeper_audit_verify" type="checkbox">
         <span>Audit also checks every claim against the messages it cites (one model call per batch)</span>
@@ -773,6 +778,10 @@ function mountSettings() {
     $('#canonkeeper_run').on('click', () => canon().catch(() => {}));
     $('#canonkeeper_audit').on('click', () => canonAudit().catch(() => {}));
     $('#canonkeeper_audit_recheck').on('click', () => canonAudit(true).catch(() => {}));
+    $('#canonkeeper_depth').prop('checked', s.depth !== false).on('change', function () {
+        s.depth = !!this.checked;
+        c.saveSettingsDebounced();
+    });
     $('#canonkeeper_audit_verify').prop('checked', !!s.auditVerify).on('change', function () {
         s.auditVerify = !!this.checked;
         c.saveSettingsDebounced();

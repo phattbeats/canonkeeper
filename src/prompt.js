@@ -55,6 +55,49 @@ export const FIELD_GUIDE = `Fields:
 - cascade: true when the entry's text should be allowed to trigger other entries it mentions. Use false only for broad entries that mention almost everything.
 - throttle: messages to wait after the entry fires before it may fire again. 0 for nearly everything.`;
 
+// The two-step build (src/deepen.js): the first call is about breadth, the
+// roster of every entity and every scene, each with a few short facts; later
+// calls, each about a few mains or scenes, write the depth. Depth and breadth
+// compete for one reply, and breadth lost.
+
+const ENTITY_SHAPE = `{
+      "name": "<the entity's fullest proper name as the story gives it>",
+      "keys": ["<words the story uses to refer to it>"],
+      "main": <true for a main character, else false>,
+      "facts": [ { "text": "<a third-person statement>", "section": "appearance" | "personality" | "voice" | "relationships" | "history", "messages": [<ids of the messages that establish it>] } ],
+      "caseSensitive": <true|false>,
+      "cascade": <true|false>,
+      "throttle": <integer >= 0>
+    }`;
+
+const SCENE_SHAPE = `{
+      "cut": "<what the story skips here>",
+      "start": <message id where the scene begins>,
+      "title": "<short label>",
+      "when": "<when it happens, as the story says it>",
+      "where": "<where it happens>",
+      "who": ["<names of those in it>"],
+      "line": "<one line: what happened>",
+      "keys": ["<words distinctive to this scene: its place, event or object>"],
+      "facts": [ { "text": "<what happened>", "section": "what", "messages": [<ids>] } ]
+    }`;
+
+/** The two breadth calls: the roster of entities, and the scenes. */
+export const SHAPE_ROSTER = `{\n  "entities": [\n    ${ENTITY_SHAPE}\n  ],\n  "scenes": []\n}`;
+export const SHAPE_SCENES = `{\n  "entities": [],\n  "scenes": [\n    ${SCENE_SHAPE}\n  ]\n}`;
+
+const cutRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- scenes:'), FIELD_GUIDE.indexOf('- A scene also becomes'));
+const keysRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- name:'), FIELD_GUIDE.indexOf('- facts:'));
+const flagRules = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- caseSensitive:'));
+
+const sceneEntryRule = `- A scene also becomes an entry of its own. For every scene give when, where, who, and line (one line on what happened); one fact saying what happened (section "what"); and 2-4 keys. A scene's keys are what is distinctive to that scene: its place, the event, an object that matters in it. Never use the main characters' names as a scene's keys, since they are in nearly every scene. Cite the messages of the scene.\n`;
+
+export const SCENES_GUIDE = `Fields:\n${cutRule}${sceneEntryRule}`;
+
+export const ROSTER_GUIDE = `Fields:
+${keysRule}- facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. This step is about coverage, so keep it short: a main character gets 3-5 facts, a character who recurs 2-4, a place, object, group, event or thread 1-3, a passing minor character one. A fact is a full sentence with the concrete detail. Tag each fact with a section: "appearance", "personality", "voice", "relationships", "history". A later step writes the main characters' full profiles in full, with quotes, so don't try to here: spend the reply on finding every entity.
+${flagRules}`;
+
 /**
  * One line per message: `#id Name: text`. Ids are what facts cite. Messages
  * in `changed` are marked, for an update.
@@ -68,11 +111,22 @@ export const TOKENS_PER_ENTITY = 300;
 
 const ROOM = (room) => `Your reply has room for about ${room} ordinary entities; a main character's profile and a scene entry each take several. Depth is in addition to breadth, never instead of it: every entity the rules call for (every named character, place, object, event, group and thread) still gets an entry, besides the main characters' profiles and a scene entry for every scene. A long story has dozens of entities. List all the entities first, then the scenes. Don't leave out a qualifying entity or shorten a profile to save space.`;
 
-export function buildPrompt(messages, outputTokens) {
+const ROOM_ROSTER = (room) => `Your reply has room for about ${room} entities. A long story has dozens: go through the story from the first message to the last and list every named character, place, object, event, group and thread the rules call for, however small. Don't leave out a qualifying entity. Scenes are reported in a separate step: leave "scenes" empty.`;
+
+const ROOM_SCENES = 'Entities are reported in a separate step: leave "entities" empty.';
+
+/** What a call of the two-step build is, by `focus`: its guide, its shape and its closing words. */
+const FOCUS = {
+    entities: { guide: ROSTER_GUIDE, shape: SHAPE_ROSTER, room: ROOM_ROSTER },
+    scenes: { guide: SCENES_GUIDE, shape: SHAPE_SCENES, room: () => ROOM_SCENES },
+};
+
+export function buildPrompt(messages, outputTokens, { depth = false, focus = 'entities' } = {}) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
+    const f = depth ? FOCUS[focus] : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
     return {
         system: SYSTEM,
-        user: `${FIELD_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\nThe transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<transcript>\n${renderTranscript(messages)}\n</transcript>`,
+        user: `${f.guide}\n\nReturn JSON in exactly this shape:\n${f.shape}\n\n${f.room(room)}\n\nThe transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<transcript>\n${renderTranscript(messages)}\n</transcript>`,
     };
 }
 
@@ -112,7 +166,7 @@ export function sceneRange(from, to, count) {
  * end of the previous part (shown, not reported on), `from`..`to` the part,
  * and message `to + 1`, if there is one, is shown as the next part's start.
  */
-export function buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens }) {
+export function buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens, depth = false, focus = 'entities' }) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
     const ctx = context
         ? `<context from="${context[0]}" to="${context[1]}">\n${renderTranscript(messages.slice(context[0], context[1] + 1))}\n</context>\n\n`
@@ -120,14 +174,17 @@ export function buildPartPrompt(messages, { part, from, to, context, known, brie
     const next = to + 1 < messages.length ? to + 1 : null;
     const after = next == null ? '' : `\n\n<next_part_starts>\n${renderTranscript([messages[next]])}\n</next_part_starts>`;
     const [s0, s1] = sceneRange(from, to, messages.length);
+    const scenesLine = depth && focus === 'entities' ? '' : `- scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
+`;
+    const entitiesLine = depth && focus === 'scenes' ? '' : `- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover, in the same sections, and add quotes only if you can give new ones. A known entity that becomes a main character: say main true. A scene already listed under <known_entities> is reported by its listed name and start only if this part continues it. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
+`;
+    const f = depth ? FOCUS[focus] : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
     const guide = `This is part ${part}: messages ${from} to ${to} of ${messages.length}. ${part > 1 ? '<known_entities> lists what the earlier parts found.' : 'It is the first part.'}${context ? ` Messages ${context[0]} to ${context[1]}, in <context>, end the previous part; they are there so you can follow the story across the cut, and were already read.` : ''}${next == null ? ' It is the last part.' : ` Message ${next}, in <next_part_starts>, begins the next part.`}
 Report:
-- scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
-- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover, in the same sections, and add quotes only if you can give new ones. A known entity that becomes a main character: say main true. A scene already listed under <known_entities> is reported by its listed name and start only if this part continues it. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
-- Every fact must cite messages from ${from} to ${to}. Report nothing from <context> or <next_part_starts> but scene starts.`;
+${scenesLine}${entitiesLine}- Every fact must cite messages from ${from} to ${to}. Report nothing from <context> or <next_part_starts> but scene starts.`;
     return {
         system: PART_SYSTEM,
-        user: `${FIELD_GUIDE}\n\n${guide}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\n<known_entities>\n${renderRoster(known, { brief }) || '(none yet)'}\n</known_entities>\n\n${ctx}<part from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</part>${after}`,
+        user: `${f.guide}\n\n${guide}\n\nReturn JSON in exactly this shape:\n${f.shape}\n\n${f.room(room)}\n\n<known_entities>\n${renderRoster(known, { brief }) || '(none yet)'}\n</known_entities>\n\n${ctx}<part from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</part>${after}`,
     };
 }
 
@@ -176,5 +233,76 @@ export function buildUpdatePrompt(messages, windows, known, previous, changed, o
     return {
         system: UPDATE_SYSTEM,
         user: `${FIELD_GUIDE}\n\n${UPDATE_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE}\n\n${ROOM(room)}\n\nThe whole transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<known_entities>\n${roster || '(none)'}\n</known_entities>\n\n<previous_facts>\n${prior || '(none)'}\n</previous_facts>\n\n<passages>\n${passages}\n</passages>`,
+    };
+}
+
+// The depth step: a few mains or scenes at a time, over the same text.
+
+export const DEPTH_SYSTEM = `You deepen a lorebook for a roleplay story. The lorebook already lists its entities and scenes with a few short facts each. You read the story and write in full the ones you are asked about, as JSON: a main character's profile, a scene's account, and the lines that show how people speak.\n\nRules:\n- Use only what the transcript states. Never invent detail.\n- Return only the JSON object. No prose, no code fences.`;
+
+export const SHAPE_DEPTH = `{
+  "entities": [
+    {
+      "name": "<the main character's name, exactly as listed>",
+      "keys": [],
+      "facts": [ { "text": "<a third-person statement>", "section": "appearance" | "personality" | "voice" | "relationships" | "history", "messages": [<ids of the messages that establish it>] } ],
+      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
+    }
+  ],
+  "scenes": [
+    {
+      "start": <the scene's start, as listed>,
+      "title": "<the scene's title, as listed>",
+      "keys": ["<2-4 words or phrases copied exactly from the scene's messages>"],
+      "facts": [ { "text": "<what happened, and why it matters>", "section": "what" | "why", "messages": [<ids>] } ],
+      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
+    }
+  ]
+}`;
+
+const profileRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('  - a main character gets'), FIELD_GUIDE.indexOf('  - a character who recurs')).trim().replace(/^- a main character gets a full profile: /, '');
+const quotesRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- quotes:'), FIELD_GUIDE.indexOf('- caseSensitive:'));
+
+const DEPTH_MAIN = `- a main character: a full profile, at least ${profileRule} The kept facts listed with the character are already in the entry: add what they don't cover, in the same sections, and don't restate them.\n`;
+const DEPTH_SCENE = `- a scene: what happened, in two to five facts (section "what": the events in order, with who did and said what; section "why": why it matters to the story, what it changes, sets up or reveals), each a full sentence or two with the concrete detail, citing messages inside the scene. Add what the kept fact doesn't cover. Give 1-3 quotes from the scene, the lines that capture it; every scene where anyone speaks has them. Give "keys" too: 2-4 words or phrases that are word for word in the scene's messages, distinctive to this scene (a place, an object, an event), and not among the <taken_keys> (another entry already uses those, and a key two entries share fires neither).\n`;
+const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the message. When narration or "she said" cuts a speech in two, take the piece on one side of the cut; never join the pieces, change punctuation, or fill a gap with "...". Check each quote against the message once more before you give it.\n`;
+
+/** The guide for a batch of main characters, of scenes, or (both) of each. */
+export const depthGuide = ({ mains = true, scenes = true } = {}) =>
+    `Write, for each ${mains && scenes ? 'main character and scene' : mains ? 'main character' : 'scene'} listed under <to_write>:\n${mains ? DEPTH_MAIN : ''}${scenes ? DEPTH_SCENE : ''}${DEPTH_QUOTES}- Report ${mains && scenes ? 'a main character under "entities" and a scene under "scenes"' : mains ? 'each under "entities" and leave "scenes" empty' : 'each under "scenes" and leave "entities" empty'}. Report only what is listed in this call, nothing else. Every fact and quote must come from messages inside the span given for it.`;
+
+/**
+ * The prompt for one batch of the depth step. `mains` and `scenes` are canon
+ * entities; `spans` maps a scene's start to its [first, last] message ids.
+ */
+export function buildDepthPrompt(messages, { from, to, mains, scenes, spans, taken = [], outputTokens }) {
+    const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
+    const title = (e) => e.name.replace(/^Scene: /, '');
+    const list = [
+        ...mains.map((e) => rosterLine(e, false).replace(' [main character]', ' [main character: write the profile]')),
+        ...scenes.map((e) => {
+            const [a, b] = spans.get(e.start);
+            const meta = [e.when && `when: ${e.when}`, e.where && `where: ${e.where}`, e.who?.length && `who: ${e.who.join(', ')}`, e.line && `happened: ${e.line}`].filter(Boolean).join('; ');
+            return `- scene start ${e.start}, title "${title(e)}", span: messages ${a} to ${b}; ${meta}${e.facts.map((f) => `\n  kept${f.section ? ` (${f.section})` : ''}: ${f.text}`).join('')}`;
+        }),
+    ].join('\n');
+    return {
+        system: DEPTH_SYSTEM,
+        user: `${depthGuide({ mains: mains.length > 0, scenes: scenes.length > 0 })}\n\nReturn JSON in exactly this shape:\n${SHAPE_DEPTH}\n\nYour reply has room for about ${room} entities' worth of text; use it on the ${mains.length + scenes.length} listed and write each one in full.\n\n<to_write>\n${list}\n</to_write>${scenes.length ? `\n\n<taken_keys>\n${taken.join('; ')}\n</taken_keys>` : ''}\n\nThe story, messages ${from} to ${to}:\n\n<transcript>\n${renderTranscript(messages.slice(from, to + 1))}\n</transcript>`,
+    };
+}
+
+// The sweep: the roster call, asked for every entity of a whole story, stops
+// short (it lists the people and places and skips plans, objects, events and
+// threads). A model reading a few scenes at a time, with the roster in hand,
+// finds what is missing.
+
+export const SWEEP_SYSTEM = `You complete a lorebook for a roleplay story. You read a passage of the story with the list of entities the lorebook already has, and report as JSON the entities the passage establishes something about that the list lacks.\n\n${RULES.split('\n').filter((l, i) => i !== 2).join('\n')}`;
+
+export function buildSweepPrompt(messages, { from, to, known, outputTokens }) {
+    const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
+    return {
+        system: SWEEP_SYSTEM,
+        user: `${ROSTER_GUIDE}\n\nReturn JSON in exactly this shape:\n${SHAPE_ROSTER}\n\nThe lorebook's list, under <known_entities>, is not complete. Read messages ${from} to ${to}, below, and list only the entities they establish something about that the list lacks. Look for: objects the characters carry, wear, give, hide or keep; plans, schemes, spells, rituals and deals; named events and turning points the characters refer back to (a fire, a battle, an arrival, a siege), even when the story gives them no formal name; every place a scene is set or the plot turns on; groups and factions; threads the story keeps returning to; and every named character who speaks or acts. Your reply has room for about ${room} entities. Don't report anything already under <known_entities>, nor under another spelling or form of the name. Only what the story would suffer from forgetting: skip a one-off detail that is never mentioned again. If nothing is missing, "entities" is empty. Scenes are reported in a separate step: leave "scenes" empty. Every fact must cite messages from ${from} to ${to}.\n\n<known_entities>\n${renderRoster(known, { brief: true }) || '(none)'}\n</known_entities>\n\n<passage from="${from}" to="${to}">\n${renderTranscript(messages.slice(from, to + 1))}\n</passage>`,
     };
 }
