@@ -285,7 +285,7 @@ test('two steps: the breadth call, one sweep, then the depth batches (2 mains, t
     const { sent, ledger } = await built2();
     assert.equal(sent.length, 1 + 1 + 2 + 1 + 3); // scenes and roster; one sweep; 4 mains in 2 calls, one asked again for quotes; 8 scenes in 3 calls
     assert.match(sent[4].user, /<to_write>\n- Oren Hale[\s\S]*<\/to_write>/, 'the one main with a single quote is asked again, alone');
-    assert.equal(sent[4].user.split('<to_write>')[1].split('</to_write>')[0].match(/^- /gm).length, 1);
+    assert.equal(sent[4].user.split('<to_write>')[1].split('</to_write>')[0].match(/\[main character: write the profile\]/g).length, 1);
     assert.ok(!/at least 1,000 characters/.test(sent[0].user), 'the breadth call asks for no profiles');
     assert.match(sent[0].user, /room for about \d+ entities/);
     assert.match(sent[0].user, /Be strict about cuts/);
