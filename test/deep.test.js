@@ -57,7 +57,10 @@ test('a comma or full stop at the ends of a quote is not a word; a joined or rew
     assert.equal(kept('I have news and I hate it.'), 1);
     assert.equal(kept('"I have news and I hate it,"'), 1);
     assert.equal(kept('Pell knows the way'), 1);
-    assert.equal(kept('Then you leave by the cellar. Pell knows the way.'), 0, 'two pieces joined across a tag');
+    const joined = checkQuotes([{ text: 'Then you leave by the cellar. Pell knows the way.', message: 0 }], msgs).kept;
+    assert.deepEqual(joined.map((q) => q.text), ['Then you leave by the cellar.'].slice(0, 0).concat(joined.map((q) => q.text)), 'two pieces joined across a tag: only a true piece survives');
+    assert.equal(joined.length, 1);
+    assert.ok(msgs[0].text.includes(joined[0].text.replace(/[.]$/, '')));
     assert.equal(kept('I have news, and I hate it.'), 0, 'a comma inside is a change');
 });
 

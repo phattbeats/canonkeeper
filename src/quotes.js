@@ -27,6 +27,15 @@ export function inMessage(quote, text) {
     return q !== '' && plain(text).includes(q);
 }
 
+/** The words of a quote, if it is not one stretch of the message: the longest of its sentences that is. Null when none is. */
+function salvage(text, message) {
+    const pieces = text.split(/(?<=[.!?])\s+/).filter((p) => wordCount(p) >= MIN_WORDS && inMessage(p, message));
+    pieces.sort((a, b) => b.length - a.length);
+    return pieces[0]?.trim().replace(/^["“]+|["”]+$/g, '') ?? null;
+}
+
+const wordCount = (t) => t.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+
 /**
  * Splits an entity's quotes into those that appear in the message they cite
  * and those that don't. Returns { kept, removed: [{ quote, why }] }.
@@ -38,11 +47,15 @@ export function checkQuotes(quotes, messages) {
     for (const q of quotes ?? []) {
         const m = Number.isInteger(q.message) ? messages[q.message] : null;
         if (!m) removed.push({ quote: q.text, why: `cites message ${q.message}, which does not exist` });
-        else if (q.text.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length < MIN_WORDS) removed.push({ quote: q.text, why: `under ${MIN_WORDS} words` });
-        else if (!inMessage(q.text, m.text)) removed.push({ quote: q.text, why: `not word for word in message ${q.message}` });
-        else if (!seen.has(plain(q.text))) {
-            seen.add(plain(q.text));
-            kept.push({ text: q.text.trim(), message: q.message, ...(q.speaker ? { speaker: q.speaker } : {}) });
+        else if (wordCount(q.text) < MIN_WORDS) removed.push({ quote: q.text, why: `under ${MIN_WORDS} words` });
+        else {
+            // Two lines joined across a "she said" are not one line; the longer true half is kept.
+            const text = inMessage(q.text, m.text) ? q.text.trim() : salvage(q.text, m.text);
+            if (!text) removed.push({ quote: q.text, why: `not word for word in message ${q.message}` });
+            else if (!seen.has(plain(text))) {
+                seen.add(plain(text));
+                kept.push({ text, message: q.message, ...(q.speaker ? { speaker: q.speaker } : {}) });
+            }
         }
     }
     return { kept, removed };
