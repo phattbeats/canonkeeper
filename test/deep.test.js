@@ -407,3 +407,14 @@ test('two steps in parts: each part reads scenes and roster, sweeps, then deepen
     assert.ok(entries.some((e) => e.canonkeeper?.kind === 'timeline'));
     for (const name of ['Tamsin Dray', 'Mora Quill']) assert.ok(titled(entries, name)?.content.length > 600, `${name} has a profile`);
 });
+
+test('two steps: someone in a third of the scenes is a main character even if the roster call did not say so', async () => {
+    const first = JSON.parse(twoStep[0]);
+    first.entities.find((e) => e.name === 'Mora Quill').main = false;
+    first.entities.find((e) => e.name === 'Pell').main = false;
+    const replies = [JSON.stringify(first), ...twoStep.slice(1)];
+    const out = await built2(replies);
+    const asked = out.sent.filter((s) => s.user.includes('[main character: write the profile]')).map((s) => s.user.slice(s.user.lastIndexOf('<to_write>'))).join('\n');
+    assert.match(asked, /Mora Quill \[main character: write the profile\]/);
+    assert.ok(!/Pell \[main character/.test(asked), 'Pell is in one scene');
+});

@@ -18,6 +18,9 @@ import { checkQuotes } from './quotes.js';
 export const MAINS_PER_CALL = 2;
 export const SCENES_PER_CALL = 3;
 
+/** A character named in at least this share of the scenes (and three) is a main character. */
+export const MAIN_SHARE = 1 / 3;
+
 const fold = (s) => s.toLowerCase();
 const batches = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, (i + 1) * n));
 
@@ -28,8 +31,16 @@ const batches = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, 
  */
 export async function deepen({ messages, canon, from, to, starts, generate, budget, review, renamed }) {
     const inPart = (e) => e.facts.some((f) => f.messages.some((id) => id >= from && id <= to));
-    const mains = canon.filter((e) => e.kind !== 'scene' && e.main && inPart(e));
     const scenes = canon.filter((e) => e.kind === 'scene' && e.start >= from && e.start <= to).sort((a, b) => a.start - b.start);
+    // The breadth call's `main` flag is a judgment made while listing dozens of entities. Anyone who is in
+    // a third of the scenes, and at least three, is a main character whatever it said.
+    for (const e of canon) {
+        if (e.kind === 'scene' || e.main) continue;
+        const names = [e.name, ...e.keys].map(fold);
+        const inScenes = scenes.filter((sc) => (sc.who ?? []).some((w) => names.includes(fold(w)))).length;
+        if (inScenes >= 3 && inScenes >= scenes.length * MAIN_SHARE) e.main = true;
+    }
+    const mains = canon.filter((e) => e.kind !== 'scene' && e.main && inPart(e));
     const sorted = [...new Set([...starts, ...scenes.map((e) => e.start)])].sort((a, b) => a - b);
     const spans = new Map(scenes.map((e) => [e.start, [e.start, Math.min(to, (sorted.find((s) => s > e.start) ?? to + 1) - 1)]]));
 
