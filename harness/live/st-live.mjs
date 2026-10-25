@@ -20,6 +20,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 //   PROXY_URL     a Claude-compatible endpoint for the connection profile
 //   OUT_DIR       where evidence/<stamp>/ goes (default: .run/live)
 //   CONTEXT       the window typed into the panel (default 200000)
+//   DEEP          set (to anything) to also require scene entries and the
+//                 Timeline in the book the server holds (PHA-4527), and to
+//                 run the gate with --deep (D17-D19). A real model's profiles
+//                 can fall short of D18's 1,000 characters, so read it
+//                 beside the book
 //   OUTPUT_SHARE  set with CONTEXT to read the story in parts: the share of
 //                 the window kept for output. It has no control in the panel,
 //                 so it goes into the extension's settings, and the gate then
@@ -40,6 +45,7 @@ const CHAT = 'Saltwind';
 const RUN_TIMEOUT = 20 * 60 * 1000;
 const CONTEXT = env('CONTEXT', '200000');
 const OUTPUT_SHARE = env('OUTPUT_SHARE');
+const DEEP = !!env('DEEP');
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const OUT = path.join(env('OUT_DIR', path.join(REPO, '.run', 'live')), stamp);
@@ -254,6 +260,13 @@ async function main() {
     const book1 = await readBook(name);
     log(`[server] lorebook '${name}' on the server: ${Object.keys(book1.entries).length} entries; bound to the chat: ${run1.chat[0].chat_metadata.world_info === name}`);
     save('book-run1.json', book1);
+    if (DEEP) {
+        const scenes = Object.values(book1.entries).filter((e) => e.canonkeeper?.kind === 'scene');
+        const timeline = Object.values(book1.entries).find((e) => e.canonkeeper?.kind === 'timeline');
+        log(`[server] scene entries in the lorebook file: ${scenes.length} ${JSON.stringify(scenes.map((e) => e.comment))}`);
+        log(`[server] Timeline: ${timeline ? `uid ${timeline.uid}, constant=${timeline.constant}, ${timeline.content.split('\n').length} lines` : 'MISSING'}`);
+        log(`[check] ${scenes.length >= 5 && timeline?.constant ? 'PASS' : 'FAIL'}: scene entries and the Timeline are in the book`);
+    }
     save('scenes.json', { boundaries: stateOf(run1.chat).ledger.scenes });
     save('ledger.json', stateOf(run1.chat).ledger);
     const chunked = stateOf(run1.chat).ledger.chunked;
@@ -302,7 +315,7 @@ async function main() {
     await browser.close();
 
     // 9. The gate, on the files the server holds.
-    const gate = spawnSync('node', [path.join(REPO, 'harness/gate.js'), '--story', path.join(REPO, 'fixtures/story'), '--run', OUT, ...(OUTPUT_SHARE ? ['--chunked'] : [])], { encoding: 'utf8' });
+    const gate = spawnSync('node', [path.join(REPO, 'harness/gate.js'), '--story', path.join(REPO, 'fixtures/story'), '--run', OUT, ...(OUTPUT_SHARE ? ['--chunked'] : []), ...(DEEP ? ['--deep'] : [])], { encoding: 'utf8' });
     save('gate.txt', gate.stdout + gate.stderr);
     for (const line of (gate.stdout + gate.stderr).trim().split('\n')) log(`[gate] ${line}`);
     log(`[gate] exit ${gate.status}`);
