@@ -71,7 +71,7 @@ function contextFor(messages, from, scenes, input) {
 function sizePart(messages, from, part, known, scenes, budget, depth) {
     const brief = estimateTokens(renderRoster(known)) > budget.input * ROSTER_SHARE;
     const context = contextFor(messages, from, scenes, budget.input);
-    const prompt = (to) => buildPartPrompt(messages, { part, from, to, context, known: depth ? known.filter((e) => e.kind !== 'scene') : known, brief, outputTokens: budget.output, depth, focus: 'entities' });
+    const prompt = (to) => buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens: budget.output, depth });
     const fixed = prompt(from - 1);
     let left = budget.input - estimateTokens(fixed.system + fixed.user) - 50; // 50: the ids in the header grow
     let to = from - 1;
@@ -144,7 +144,8 @@ export async function buildChunked({ messages, generate, budget, pinned = [], fo
         const reply = depth
             ? await askBreadth(
                   counted,
-                  { scenes: buildPartPrompt(messages, { part, from, to, context, known: canon, brief: true, outputTokens: budget.output, depth, focus: 'scenes' }), entities: prompt,
+                  {
+                      first: prompt,
                       sweep: (a, b, known) => buildSweepPrompt(messages, { from: a, to: b, known, outputTokens: budget.output }),
                   },
                   budget.output,

@@ -51,6 +51,16 @@ test('a quote is kept only if it is word for word in the message it cites', () =
     assert.match(removed[3].why, /under 2 words/);
 });
 
+test('a comma or full stop at the ends of a quote is not a word; a joined or reworded line still fails', () => {
+    const msgs = [{ id: 0, text: '"I have news and I hate it," Quill says. "Then you leave by the cellar," she tells Tamsin. "Pell knows the way."' }];
+    const kept = (t) => checkQuotes([{ text: t, message: 0 }], msgs).kept.length;
+    assert.equal(kept('I have news and I hate it.'), 1);
+    assert.equal(kept('"I have news and I hate it,"'), 1);
+    assert.equal(kept('Pell knows the way'), 1);
+    assert.equal(kept('Then you leave by the cellar. Pell knows the way.'), 0, 'two pieces joined across a tag');
+    assert.equal(kept('I have news, and I hate it.'), 0, 'a comma inside is a change');
+});
+
 test('typography and spacing do not matter to the quote check, words do', () => {
     const msgs = [{ id: 0, text: 'She said, “It’s    not   mine, Captain.”' }];
     assert.equal(checkQuotes([{ text: "It's not mine, Captain.", message: 0 }], msgs).kept.length, 1);
@@ -268,18 +278,20 @@ const built2 = (replies = twoStep, extra = {}) => {
     return build({ messages, generate: async (req) => (sent.push(req), g(req)), contextTokens: 200000, depth: true, ...extra }).then((out) => ({ ...out, sent }));
 };
 
-test('two steps: the breadth call, then the depth batches (2 mains, then 3 scenes, per call)', async () => {
+test('two steps: the breadth call, one sweep, then the depth batches (2 mains, then 3 scenes, per call)', async () => {
     const { sent, ledger } = await built2();
-    assert.equal(sent.length, 3 + 2 + 3); // scenes, roster, one sweep; 4 mains in 2 calls, 8 scenes in 3 calls
-    assert.match(sent[0].user, /Entities are reported in a separate step/);
-    assert.ok(!/at least 1,000 characters/.test(sent[1].user), 'the roster call asks for no profiles');
-    assert.match(sent[1].user, /room for about \d+ entities/);
-    assert.match(sent[1].user, /leave "scenes" empty/);
-    assert.match(sent[2].user, /is not complete[\s\S]*<known_entities>[\s\S]*Tamsin Dray/);
-    assert.match(sent[3].user, /<to_write>[\s\S]*\[main character: write the profile\][\s\S]*Tamsin Dray/);
-    assert.match(sent[5].user, /<taken_keys>[\s\S]*Saltgate[\s\S]*<\/taken_keys>/);
-    assert.ok(!/taken_keys>/.test(sent[3].user.split('</to_write>')[1]), 'mains need no taken keys');
-    assert.match(sent[5].user, /scene start 0, title "The Drowned Lantern", span: messages 0 to \d+/);
+    assert.equal(sent.length, 1 + 1 + 2 + 3); // scenes and roster; one sweep; 4 mains in 2 calls, 8 scenes in 3 calls
+    assert.ok(!/at least 1,000 characters/.test(sent[0].user), 'the breadth call asks for no profiles');
+    assert.match(sent[0].user, /room for about \d+ entities/);
+    assert.match(sent[0].user, /Be strict about cuts/);
+    assert.match(sent[1].user, /is not complete[\s\S]*<known_entities>[\s\S]*Tamsin Dray/);
+    assert.ok(!/scene starting at message/.test(sent[1].user), 'the sweep lists entities, not scenes');
+    assert.match(sent[2].user, /<to_write>[\s\S]*\[main character: write the profile\][\s\S]*Tamsin Dray/);
+    assert.ok(!/- a scene:/.test(sent[2].user), 'a batch of mains is not told how to write a scene');
+    assert.match(sent[4].user, /<taken_keys>[\s\S]*Saltgate[\s\S]*<\/taken_keys>/);
+    assert.ok(!/taken_keys>/.test(sent[2].user.split('</to_write>')[1]), 'mains need no taken keys');
+    assert.ok(!/- a main character:/.test(sent[4].user), 'a batch of scenes is not told how to write a profile');
+    assert.match(sent[4].user, /scene start 0, title "The Drowned Lantern", span: messages 0 to \d+/);
     assert.ok(ledger.review.every((r) => !/depth step/.test(r.reason)));
 });
 
@@ -298,7 +310,7 @@ test('two steps: the same mains and scenes, in full, as the one-shot reply gives
 
 test('two steps: a depth batch that cannot be read costs that batch its depth, not the build', async () => {
     const bad = [...twoStep];
-    const out = await built2([...bad.slice(0, 5), 'not json', 'still not json', ...bad.slice(6)]); // the first scene batch, twice
+    const out = await built2([...bad.slice(0, 4), 'not json', 'still not json', ...bad.slice(5)]); // the first scene batch, twice
     assert.ok(out.ledger.review.some((r) => /depth step's reply could not be used/.test(r.reason) && /The Drowned Lantern/.test(r.name)));
     const lantern = Object.values(out.book.entries).find((e) => e.comment === 'Scene: The Drowned Lantern');
     assert.ok(lantern, 'the scene is still an entry, at breadth');
@@ -306,11 +318,11 @@ test('two steps: a depth batch that cannot be read costs that batch its depth, n
 });
 
 test('two steps: the depth step adds nothing it was not asked about', async () => {
-    const extra = JSON.parse(twoStep[3]);
+    const extra = JSON.parse(twoStep[2]);
     extra.entities.push({ name: 'A Stranger', keys: ['stranger'], facts: [{ text: 'Walks in.', messages: [2] }] });
     extra.entities.push({ name: 'Pell', keys: [], facts: [{ text: 'Not a main character.', messages: [2] }] });
     const replies = [...twoStep];
-    replies[3] = JSON.stringify(extra);
+    replies[2] = JSON.stringify(extra);
     const out = await built2(replies);
     assert.ok(!Object.values(out.book.entries).some((e) => e.comment === 'A Stranger'));
     assert.ok(!/Not a main character/.test(Object.values(out.book.entries).find((e) => e.comment === 'Pell').content));
@@ -320,13 +332,13 @@ test('two steps: the depth step adds nothing it was not asked about', async () =
 test('two steps: the sweep adds what the roster missed, not what it has, and only from its passage', async () => {
     const sweep = (names, more = []) => JSON.stringify({ entities: [...names.map((n) => ent(n, [n.toLowerCase()], [2])), ...more], scenes: [] });
     const replies = [...twoStep];
-    replies[2] = sweep(['Tariff', 'Lamp room'], [ent('Tamsin Dray', ['Tamsin'], [2]), ent('Cellar hatch', ['cellar hatch'], [9999])]);
+    replies[1] = sweep(['Tariff', 'Lamp room'], [ent('Tamsin Dray', ['Tamsin'], [2]), ent('Cellar hatch', ['cellar hatch'], [9999])]);
     const out = await built2(replies);
     const titles = Object.values(out.book.entries).map((e) => e.comment);
     for (const t of ['Tariff', 'Lamp room']) assert.ok(titles.includes(t), t);
     assert.equal(titles.filter((t) => t === 'Tamsin Dray').length, 1, 'an entity already listed is not added again');
     assert.ok(!titles.includes('Cellar hatch'), 'a fact citing nothing in the passage is no fact');
-    assert.match(out.sent[2].user, /<known_entities>[\s\S]*Tamsin Dray[\s\S]*<passage from="0" to="\d+">/);
+    assert.match(out.sent[1].user, /<known_entities>[\s\S]*Tamsin Dray[\s\S]*<passage from="0" to="\d+">/);
 });
 
 test('sweep passages: cut at scene starts, never past the size, every message once', () => {
@@ -364,12 +376,9 @@ function partsModel() {
                 scenes: scenes.map((s) => ({ start: s.start, title: s.title, keys: [], facts: trim(s.facts.slice(1), a, b), quotes: (s.quotes ?? []).filter((q) => q.message >= a && q.message <= b) })),
             };
         } else if (user.includes('is not complete')) (kind = 'sweep'), (reply = { entities: [], scenes: [] });
-        else if (user.includes('Entities are reported in a separate step')) {
-            kind = 'scenes';
-            reply = { entities: [], scenes: full.scenes.filter((s) => s.start >= a && s.start <= b + 1).map(({ quotes, ...s }) => ({ ...s, facts: trim(s.facts.slice(0, 1), a, b + 1).length ? trim(s.facts.slice(0, 1), a, b + 1) : [{ text: s.line, messages: [s.start] }] })) };
-        } else {
-            kind = 'roster';
-            reply = { entities: full.entities.map(({ quotes, ...e }) => ({ ...e, facts: trim(e.facts.slice(0, 3), a, b) })).filter((e) => e.facts.length), scenes: [] };
+        else if (user.includes('Be strict about cuts')) {
+            kind = 'breadth';
+            reply = { entities: full.entities.map(({ quotes, ...e }) => ({ ...e, facts: trim(e.facts.slice(0, 3), a, b) })).filter((e) => e.facts.length), scenes: full.scenes.filter((s) => s.start >= a && s.start <= b + 1).map(({ quotes, ...s }) => ({ ...s, facts: trim(s.facts.slice(0, 1), a, b + 1).length ? trim(s.facts.slice(0, 1), a, b + 1) : [{ text: s.line, messages: [s.start] }] })) };
         }
         calls.push({ kind, a, b });
         return JSON.stringify(reply);
@@ -377,14 +386,14 @@ function partsModel() {
     return { generate, calls };
 }
 
-test('two steps in parts: each part reads scenes, roster, sweep, then deepens what it holds; scenes and profiles survive', async () => {
+test('two steps in parts: each part reads scenes and roster, sweeps, then deepens what it holds; scenes and profiles survive', async () => {
     const { generate, calls } = partsModel();
     const out = await build({ messages, generate, contextTokens: 15200, outputShare: 0.5, depth: true });
     const parts = out.ledger.chunked.parts;
     assert.ok(parts.length >= 2, `read in ${parts.length} parts`);
     for (const p of parts) {
         const mine = calls.filter((c) => c.a >= p.from && c.b <= (p.read ?? p.to));
-        assert.deepEqual(mine.slice(0, 3).map((c) => c.kind), ['scenes', 'roster', 'sweep'], `part ${p.part} starts with the breadth step`);
+        assert.deepEqual(mine.slice(0, 2).map((c) => c.kind), ['breadth', 'sweep'], `part ${p.part} starts with the breadth step`);
     }
     assert.ok(calls.some((c) => c.kind === 'depth'));
     assert.equal(calls.at(-1).kind, 'reconcile');

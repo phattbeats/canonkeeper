@@ -84,12 +84,12 @@ export function makeLedger({ messages, budget, scenes, compiled, review, revisio
 export async function build({ messages, generate, contextTokens, maxOutputTokens, outputShare, pinned = [], foreign = [], uids, nextUid, depth = false }) {
     if (!messages.length) throw new Error('empty transcript');
     const budget = planBudget({ contextTokens, maxOutputTokens, outputShare });
-    const prompt = buildPrompt(messages, budget.output, { depth, focus: 'entities' });
+    const prompt = buildPrompt(messages, budget.output, { depth });
     const needed = estimateTokens(prompt.system + prompt.user);
     if (needed > budget.input) return buildChunked({ messages, generate, budget, pinned, foreign, uids, nextUid, depth });
 
     const reply = depth
-        ? await askBreadth(generate, { scenes: buildPrompt(messages, budget.output, { depth, focus: 'scenes' }), entities: prompt, sweep: (from, to, known) => buildSweepPrompt(messages, { from, to, known, outputTokens: budget.output }) }, budget.output, messages.length, { messages, from: 0, to: messages.length - 1 })
+        ? await askBreadth(generate, { first: prompt, sweep: (from, to, known) => buildSweepPrompt(messages, { from, to, known, outputTokens: budget.output }) }, budget.output, messages.length, { messages, from: 0, to: messages.length - 1 })
         : await ask(generate, prompt, budget.output, messages.length);
     const review = [...reply.review];
     if (depth) await deepen({ messages, canon: reply.entities, from: 0, to: messages.length - 1, starts: reply.scenes, generate, budget, review, renamed: [] });

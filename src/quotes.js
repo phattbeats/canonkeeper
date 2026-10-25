@@ -5,7 +5,8 @@
 /**
  * The text as the check compares it: typographic quotes and dashes folded to
  * plain ones and runs of whitespace to a space. Nothing else is forgiven:
- * words, their order and their case must match.
+ * words, their order and their case must match. (Punctuation at the very
+ * ends of a quote is not part of the words: see `inMessage`.)
  */
 export function plain(s) {
     return String(s)
@@ -20,10 +21,10 @@ export function plain(s) {
 /** A quote has at least this many words: "Go," is not a line worth keeping. */
 export const MIN_WORDS = 2;
 
-/** True when `quote` appears word for word in `text`. */
+/** True when `quote` appears word for word in `text`. A comma or full stop at the quote's ends is not a word: a speech cut by "she said" ends in a comma that a copy often turns into a full stop. */
 export function inMessage(quote, text) {
-    const q = plain(quote);
-    return plain(text).includes(q);
+    const q = plain(quote).replace(/^[\s"'.,;:!?-]+|[\s"',;:.!?-]+$/g, '');
+    return q !== '' && plain(text).includes(q);
 }
 
 /**

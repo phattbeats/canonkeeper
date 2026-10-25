@@ -37,7 +37,9 @@ export async function deepen({ messages, canon, from, to, starts, generate, budg
     let done = 0;
     for (const batch of [...batches(mains, MAINS_PER_CALL).map((m) => ({ mains: m, scenes: [] })), ...batches(scenes, SCENES_PER_CALL).map((s) => ({ mains: [], scenes: s }))]) {
         const names = [...batch.mains, ...batch.scenes].map((e) => e.name).join(', ');
-        const prompt = buildDepthPrompt(messages, { from, to, ...batch, spans, taken, outputTokens: budget.output });
+        // A batch of scenes reads only its own stretch; the main characters read it all.
+        const stretch = batch.mains.length ? [from, to] : [Math.min(...batch.scenes.map((e) => spans.get(e.start)[0])), Math.max(...batch.scenes.map((e) => spans.get(e.start)[1]))];
+        const prompt = buildDepthPrompt(messages, { from: stretch[0], to: stretch[1], ...batch, spans, taken, outputTokens: budget.output });
         const needed = estimateTokens(prompt.system + prompt.user);
         if (needed > budget.input) {
             review.push({ name: names, reason: `the depth step needs ~${needed} prompt tokens but only ${budget.input} fit; left at breadth` });
@@ -100,26 +102,27 @@ export function sweepWindows(messages, from, to, starts) {
 }
 
 /**
- * The breadth step: scenes first, then the roster of entities, then a sweep
- * over the story a passage at a time for what the roster missed, as separate
- * calls so none crowds out another. `prompts` gives the scenes prompt, the
- * roster prompt (the one the caller sized) and `sweep(from, to, known)`.
- * Returns what one call of the one-shot prompt returns:
- * { scenes, entities, review }.
+ * The breadth step: one call for the scenes and a short roster, then a sweep
+ * over the story a passage at a time for what the roster missed (asked for
+ * every entity of a whole story, a model stops short; reading a few scenes
+ * at a time with the roster in hand it finds the plans, objects and events).
+ * `prompts` gives the first prompt (the one the caller sized) and
+ * `sweep(from, to, known)`. Returns what one call of the one-shot prompt
+ * returns: { scenes, entities, review }.
  */
 export async function askBreadth(generate, prompts, maxTokens, messageCount, { messages, from, to, known = [] }) {
-    const sc = await ask(generate, prompts.scenes, maxTokens, messageCount);
-    const en = await ask(generate, prompts.entities, maxTokens, messageCount);
-    const entities = [...en.entities];
-    const review = [...sc.review, ...en.review];
-    const listed = (e) => [...known, ...entities].some((x) => [x.name, ...x.keys].some((k) => [e.name, ...e.keys].some((j) => fold(j) === fold(k))));
-    for (const [a, b] of sweepWindows(messages, from, to, sc.scenes)) {
-        const more = await ask(generate, prompts.sweep(a, b, [...known, ...entities]), maxTokens, messageCount);
+    const first = await ask(generate, prompts.first, maxTokens, messageCount);
+    const entities = [...first.entities];
+    const review = [...first.review];
+    const people = () => [...known, ...entities].filter((x) => x.kind !== 'scene');
+    const listed = (e) => people().some((x) => [x.name, ...x.keys].some((k) => [e.name, ...e.keys].some((j) => fold(j) === fold(k))));
+    for (const [a, b] of sweepWindows(messages, from, to, first.scenes)) {
+        const more = await ask(generate, prompts.sweep(a, b, people()), maxTokens, messageCount);
         review.push(...more.review);
         for (const e of more.entities) {
             const facts = e.facts.map((f) => ({ ...f, messages: f.messages.filter((id) => id >= a && id <= b) })).filter((f) => f.messages.length);
             if (facts.length && !listed(e)) entities.push({ ...e, facts });
         }
     }
-    return { scenes: sc.scenes, entities: [...entities, ...sc.entities], review };
+    return { scenes: first.scenes, entities, review };
 }

@@ -82,17 +82,15 @@ const SCENE_SHAPE = `{
       "facts": [ { "text": "<what happened>", "section": "what", "messages": [<ids>] } ]
     }`;
 
-/** The two breadth calls: the roster of entities, and the scenes. */
+/** The breadth call (roster and scenes), and the shape the sweeps and the roster use. */
+export const SHAPE_BOTH = `{\n  "entities": [\n    ${ENTITY_SHAPE}\n  ],\n  "scenes": [\n    ${SCENE_SHAPE}\n  ]\n}`;
 export const SHAPE_ROSTER = `{\n  "entities": [\n    ${ENTITY_SHAPE}\n  ],\n  "scenes": []\n}`;
-export const SHAPE_SCENES = `{\n  "entities": [],\n  "scenes": [\n    ${SCENE_SHAPE}\n  ]\n}`;
 
 const cutRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- scenes:'), FIELD_GUIDE.indexOf('- A scene also becomes'));
 const keysRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- name:'), FIELD_GUIDE.indexOf('- facts:'));
 const flagRules = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- caseSensitive:'));
 
 const sceneEntryRule = `- A scene also becomes an entry of its own. For every scene give when, where, who, and line (one line on what happened); one fact saying what happened (section "what"); and 2-4 keys. A scene's keys are what is distinctive to that scene: its place, the event, an object that matters in it. Never use the main characters' names as a scene's keys, since they are in nearly every scene. Cite the messages of the scene.\n`;
-
-export const SCENES_GUIDE = `Fields:\n${cutRule}${sceneEntryRule}`;
 
 export const ROSTER_GUIDE = `Fields:
 ${keysRule}- facts: what the story establishes about the entity, most important first, each citing the message ids it comes from. This step is about coverage, so keep it short: a main character gets 3-5 facts, a character who recurs 2-4, a place, object, group, event or thread 1-3, a passing minor character one. A fact is a full sentence with the concrete detail. Tag each fact with a section: "appearance", "personality", "voice", "relationships", "history". A later step writes the main characters' full profiles in full, with quotes, so don't try to here: spend the reply on finding every entity.
@@ -111,19 +109,16 @@ export const TOKENS_PER_ENTITY = 300;
 
 const ROOM = (room) => `Your reply has room for about ${room} ordinary entities; a main character's profile and a scene entry each take several. Depth is in addition to breadth, never instead of it: every entity the rules call for (every named character, place, object, event, group and thread) still gets an entry, besides the main characters' profiles and a scene entry for every scene. A long story has dozens of entities. List all the entities first, then the scenes. Don't leave out a qualifying entity or shorten a profile to save space.`;
 
-const ROOM_ROSTER = (room) => `Your reply has room for about ${room} entities. A long story has dozens: go through the story from the first message to the last and list every named character, place, object, event, group and thread the rules call for, however small. Don't leave out a qualifying entity. Scenes are reported in a separate step: leave "scenes" empty.`;
+const ROOM_SCENES_RULE = 'Be strict about cuts: a scene is usually many messages long (a story of ordinary messages has about one scene per eight to fifteen of them; far more means you are splitting beats, not scenes), so most messages continue the scene before them. Check each cut again before you list it: if the people carry on from the message before, drop it.';
 
-const ROOM_SCENES = 'Entities are reported in a separate step: leave "entities" empty.';
+const ROOM_BREADTH = (room) => `Your reply has room for about ${room} entities. A long story has dozens: go through the story from the first message to the last and list every named character, place, object, event, group and thread the rules call for, however small. Don't leave out a qualifying entity. List all the entities first, then the scenes. ${ROOM_SCENES_RULE}`;
 
-/** What a call of the two-step build is, by `focus`: its guide, its shape and its closing words. */
-const FOCUS = {
-    entities: { guide: ROSTER_GUIDE, shape: SHAPE_ROSTER, room: ROOM_ROSTER },
-    scenes: { guide: SCENES_GUIDE, shape: SHAPE_SCENES, room: () => ROOM_SCENES },
-};
+/** The first call of the two-step build: scenes and roster, short. */
+const BREADTH = { guide: `Fields:\n${cutRule}${sceneEntryRule}${ROSTER_GUIDE.replace(/^Fields:\n/, '')}`, shape: SHAPE_BOTH, room: ROOM_BREADTH };
 
-export function buildPrompt(messages, outputTokens, { depth = false, focus = 'entities' } = {}) {
+export function buildPrompt(messages, outputTokens, { depth = false } = {}) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
-    const f = depth ? FOCUS[focus] : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
+    const f = depth ? BREADTH : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
     return {
         system: SYSTEM,
         user: `${f.guide}\n\nReturn JSON in exactly this shape:\n${f.shape}\n\n${f.room(room)}\n\nThe transcript has ${messages.length} messages, ids 0 to ${messages.length - 1}.\n\n<transcript>\n${renderTranscript(messages)}\n</transcript>`,
@@ -166,7 +161,7 @@ export function sceneRange(from, to, count) {
  * end of the previous part (shown, not reported on), `from`..`to` the part,
  * and message `to + 1`, if there is one, is shown as the next part's start.
  */
-export function buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens, depth = false, focus = 'entities' }) {
+export function buildPartPrompt(messages, { part, from, to, context, known, brief, outputTokens, depth = false }) {
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
     const ctx = context
         ? `<context from="${context[0]}" to="${context[1]}">\n${renderTranscript(messages.slice(context[0], context[1] + 1))}\n</context>\n\n`
@@ -174,11 +169,11 @@ export function buildPartPrompt(messages, { part, from, to, context, known, brie
     const next = to + 1 < messages.length ? to + 1 : null;
     const after = next == null ? '' : `\n\n<next_part_starts>\n${renderTranscript([messages[next]])}\n</next_part_starts>`;
     const [s0, s1] = sceneRange(from, to, messages.length);
-    const scenesLine = depth && focus === 'entities' ? '' : `- scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
+    const scenesLine = `- scenes: scene starts among messages ${s0} to ${s1}.${next == null ? '' : ` Include ${next} only if the story cuts to a new scene there.`}
 `;
-    const entitiesLine = depth && focus === 'scenes' ? '' : `- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover, in the same sections, and add quotes only if you can give new ones. A known entity that becomes a main character: say main true. A scene already listed under <known_entities> is reported by its listed name and start only if this part continues it. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
+    const entitiesLine = `- entities: every entity messages ${from} to ${to} establish something about, known or new. For a known entity, use its name exactly as <known_entities> lists it, and add only what this part establishes that its kept facts don't already cover, in the same sections, and add quotes only if you can give new ones. A known entity that becomes a main character: say main true. A scene already listed under <known_entities> is reported by its listed name and start only if this part continues it. One exception: when this part gives the proper name of an entity listed under an epithet or title ("the cartographer" turns out to be "Ines Vell"), report it under its proper name with the listed name among its keys.
 `;
-    const f = depth ? FOCUS[focus] : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
+    const f = depth ? BREADTH : { guide: FIELD_GUIDE, shape: SHAPE, room: ROOM };
     const guide = `This is part ${part}: messages ${from} to ${to} of ${messages.length}. ${part > 1 ? '<known_entities> lists what the earlier parts found.' : 'It is the first part.'}${context ? ` Messages ${context[0]} to ${context[1]}, in <context>, end the previous part; they are there so you can follow the story across the cut, and were already read.` : ''}${next == null ? ' It is the last part.' : ` Message ${next}, in <next_part_starts>, begins the next part.`}
 Report:
 ${scenesLine}${entitiesLine}- Every fact must cite messages from ${from} to ${to}. Report nothing from <context> or <next_part_starts> but scene starts.`;
@@ -265,7 +260,7 @@ const quotesRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- quotes:'), FIELD_GUI
 
 const DEPTH_MAIN = `- a main character: a full profile, at least ${profileRule} The kept facts listed with the character are already in the entry: add what they don't cover, in the same sections, and don't restate them.\n`;
 const DEPTH_SCENE = `- a scene: what happened, in two to five facts (section "what": the events in order, with who did and said what; section "why": why it matters to the story, what it changes, sets up or reveals), each a full sentence or two with the concrete detail, citing messages inside the scene. Add what the kept fact doesn't cover. Give 1-3 quotes from the scene, the lines that capture it; every scene where anyone speaks has them. Give "keys" too: 2-4 words or phrases that are word for word in the scene's messages, distinctive to this scene (a place, an object, an event), and not among the <taken_keys> (another entry already uses those, and a key two entries share fires neither).\n`;
-const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the message. When narration or "she said" cuts a speech in two, take the piece on one side of the cut; never join the pieces, change punctuation, or fill a gap with "...". Check each quote against the message once more before you give it.\n`;
+const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the message. When narration or "she said" cuts a speech in two, take the piece on one side of the cut; never join the pieces, change punctuation, or fill a gap with "...". Prefer a short line: one sentence of speech, copied from between its quotation marks, is the safest. Check each quote against the message once more before you give it.\n`;
 
 /** The guide for a batch of main characters, of scenes, or (both) of each. */
 export const depthGuide = ({ mains = true, scenes = true } = {}) =>
