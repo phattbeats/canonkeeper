@@ -266,6 +266,10 @@ const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the mess
 export const depthGuide = ({ mains = true, scenes = true } = {}) =>
     `Write, for each ${mains && scenes ? 'main character and scene' : mains ? 'main character' : 'scene'} listed under <to_write>:\n${mains ? DEPTH_MAIN : ''}${scenes ? DEPTH_SCENE : ''}${DEPTH_QUOTES}- Report ${mains && scenes ? 'a main character under "entities" and a scene under "scenes"' : mains ? 'each under "entities" and leave "scenes" empty' : 'each under "scenes" and leave "entities" empty'}. Report only what is listed in this call, nothing else. Every fact and quote must come from messages inside the span given for it.`;
 
+/** A main character's kept facts past this many characters are enough; more is added sparingly. */
+export const PROFILE_ENOUGH = 3000;
+export const GROWTH_FACTS = 6;
+
 /**
  * The prompt for one batch of the depth step. `mains` and `scenes` are canon
  * entities; `spans` maps a scene's start to its [first, last] message ids.
@@ -274,7 +278,12 @@ export function buildDepthPrompt(messages, { from, to, mains, scenes, spans, tak
     const room = Math.floor(outputTokens / TOKENS_PER_ENTITY);
     const title = (e) => e.name.replace(/^Scene: /, '');
     const list = [
-        ...mains.map((e) => rosterLine(e, false).replace(' [main character]', ' [main character: write the profile]')),
+        ...mains.map((e) => {
+            const have = e.facts.reduce((n, f) => n + f.text.length, 0);
+            // A profile read in parts grows with every part; past a point only what is new and matters is added.
+            const grown = have >= PROFILE_ENOUGH ? ` [the profile already holds ${have} characters: add at most ${GROWTH_FACTS} new facts, only what matters for the story from here on and the kept facts don't cover, and at most 2 new quotes]` : ' [main character: write the profile]';
+            return rosterLine(e, false).replace(' [main character]', grown);
+        }),
         ...scenes.map((e) => {
             const [a, b] = spans.get(e.start);
             const meta = [e.when && `when: ${e.when}`, e.where && `where: ${e.where}`, e.who?.length && `who: ${e.who.join(', ')}`, e.line && `happened: ${e.line}`].filter(Boolean).join('; ');
