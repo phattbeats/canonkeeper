@@ -109,7 +109,7 @@ export const TOKENS_PER_ENTITY = 300;
 
 const ROOM = (room) => `Your reply has room for about ${room} ordinary entities; a main character's profile and a scene entry each take several. Depth is in addition to breadth, never instead of it: every entity the rules call for (every named character, place, object, event, group and thread) still gets an entry, besides the main characters' profiles and a scene entry for every scene. A long story has dozens of entities. List all the entities first, then the scenes. Don't leave out a qualifying entity or shorten a profile to save space.`;
 
-const ROOM_SCENES_RULE = 'Be strict about cuts: a scene is usually many messages long (a story of ordinary messages has about one scene per eight to fifteen of them; far more means you are splitting beats, not scenes), so most messages continue the scene before them. Check each cut again before you list it: if the people carry on from the message before, drop it.';
+const ROOM_SCENES_RULE = 'Be strict about cuts, but list every one: a beat inside a scene (a reply, the next action, the same people carrying on) is not a cut, and a real skip in time, place or people always is, however short the scene it ends. How many scenes there are is whatever the story has. Check each cut again before you list it: if the people carry on from the message before, drop it.';
 
 const ROOM_BREADTH = (room) => `Your reply has room for about ${room} entities. A long story has dozens: go through the story from the first message to the last and list every named character, place, object, event, group and thread the rules call for, however small. Don't leave out a qualifying entity. List all the entities first, then the scenes. ${ROOM_SCENES_RULE}`;
 
