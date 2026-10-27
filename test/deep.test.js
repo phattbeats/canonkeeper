@@ -14,6 +14,7 @@ import { build } from '../src/build.js';
 import { update } from '../src/update.js';
 import { compile, renderContent } from '../src/compile.js';
 import { readReply } from '../src/parse.js';
+import { buildDepthPrompt } from '../src/prompt.js';
 import { checkQuotes } from '../src/quotes.js';
 import { replay } from '../src/models/replay.js';
 import { runGate } from '../harness/gate.js';
@@ -140,6 +141,49 @@ test('scene entries carry what, when, where, who, why and quotes, keyed on the s
     assert.equal(scene.canonkeeper.kind, 'scene');
     assert.equal(scene.canonkeeper.start, 0);
     assert.ok(ledger.find((e) => e.name === 'Scene: The Quay').start === 10, 'the ledger keeps where the scene starts');
+});
+
+test('a long scene told in parts: one entry, each part with its own lines, parts listed under the scene in the Timeline', () => {
+    const reply = JSON.stringify({
+        scenes: [{
+            start: 0, title: 'The Drowned Lantern', when: 'Day 1, dusk', where: 'The Drowned Lantern', who: ['Tamsin', 'Quill'], line: 'Quill hires Tamsin.', keys: ['Drowned Lantern'],
+            parts: [
+                { title: 'The booth', facts: [{ text: 'Tamsin joins the woman in the booth.', section: 'what', messages: [1] }], quotes: [{ text: "You've been staring at the door like it owes you money.", speaker: 'Tamsin', message: 1 }] },
+                { title: 'The job', facts: [{ text: 'Quill offers the tube.', section: 'what', messages: [3] }], quotes: [{ text: 'Made up line.', speaker: 'Quill', message: 3 }] },
+            ],
+            facts: [{ text: 'It starts the mission.', section: 'why', messages: [1] }],
+        }],
+        entities: [],
+    });
+    const r = readReply(reply, 81);
+    const scene = r.entities[0];
+    assert.equal(scene.kind, 'scene');
+    assert.deepEqual(scene.facts.map((f) => f.part), [undefined, 'The booth', 'The job'], 'parts are kept flat, each fact labelled');
+    assert.deepEqual(scene.quotes.map((q) => q.part), ['The booth', 'The job']);
+    const { entries } = compile(r.entities, messages);
+    const entry = titled(entries, 'Scene: The Drowned Lantern');
+    assert.equal(entries.filter((e) => e.canonkeeper?.kind === 'scene').length, 1, 'parts never become entries of their own');
+    const lines = entry.content.split('\n');
+    assert.equal(lines[0], 'When: Day 1, dusk. Where: The Drowned Lantern. Who: Tamsin, Quill.');
+    assert.equal(lines[1], `The booth: Tamsin joins the woman in the booth. Said: "You've been staring at the door like it owes you money." (Tamsin)`);
+    assert.equal(lines[2], 'The job: Quill offers the tube.', 'a quote that is not word for word is dropped from its part');
+    assert.equal(lines[3], 'Why it matters: It starts the mission.');
+    assert.ok(entry.canonkeeper.facts.every((f) => f.section === 'why' || f.part), 'the entry records which part a fact belongs to');
+    const tl = titled(entries, 'Timeline');
+    assert.equal(tl.content, '1. The Drowned Lantern (Day 1, dusk): Quill hires Tamsin.\n   - The booth\n   - The job');
+});
+
+test('the depth step sizes the parts to the scene and asks for quotes per part', () => {
+    const scenes = [
+        { name: 'Scene: Short', kind: 'scene', start: 0, keys: [], facts: [{ text: 'A.', messages: [0] }] },
+        { name: 'Scene: Long', kind: 'scene', start: 10, keys: [], facts: [{ text: 'B.', messages: [10] }] },
+    ];
+    const spans = new Map([[0, [0, 9]], [10, [10, 45]]]);
+    const { user } = buildDepthPrompt(messages, { from: 0, to: 45, mains: [], scenes, spans, outputTokens: 8000 });
+    assert.match(user, /span: messages 0 to 9 \(10 messages: one part\)/);
+    assert.match(user, /span: messages 10 to 45 \(36 messages: 3 parts or so\)/);
+    assert.match(user, /1-3 quotes from that stretch/);
+    assert.match(user, /"parts": \[/);
 });
 
 test('a scene yields a key it shares with an entity, which keeps it', () => {

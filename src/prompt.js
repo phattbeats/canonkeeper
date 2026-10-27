@@ -42,7 +42,7 @@ export const SHAPE = `{
 }`;
 
 export const FIELD_GUIDE = `Fields:
-- scenes: every point where the story cuts to a new scene (the first scene starts at 0; give it too, with its details): a jump in time, or a jump to a different place or situation. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. A message that picks up where the previous one left off (the same people carrying on what they were doing, with no time skipped) continues the scene, even when they move somewhere else: room to room, out of a building, down a tunnel, onto a boat. Only a cut starts a new one. For each scene after the first, first say in cut what the story skips there: time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header that opens a new scene. If you can't name one, it isn't a new scene; leave it out.
+- scenes: every point where the story cuts to a new scene (the first scene starts at 0; give it too, with its details): a jump in time, or a jump to a different place or situation. Bracketed narrator headers such as "[Place · Scene · Day]" usually mark a new scene, but a scene can also change with no header at all ("The next morning..."), so read the prose. A message that picks up where the previous one left off (the same people carrying on what they were doing, with no time skipped) continues the scene, even when they move somewhere else: room to room, out of a building, down a tunnel, onto a boat. Only a cut starts a new one, and a cut shows as one of three things: the story moves to a later time (the next morning, that evening, days later); it switches to a different point of view or to other people somewhere else; or the characters finish what they were doing and move on to the next thing in another place. A scene is the whole of what happens between two such cuts, start to end: a long scene with many turns in it is still one scene. For each scene after the first, first say in cut what the story skips there: time that passes unseen, a jump to a place the characters aren't shown travelling to, a switch to other people, or a narrator header that opens a new scene. If you can't name one, it isn't a new scene; leave it out.
 - A scene also becomes an entry of its own. For every scene give when, where, who, and line (one line on what happened); facts saying what happened and, in section "why", why it matters to the story; 1-3 quotes (the lines that capture the scene: every scene where anyone speaks has them); and 2-4 keys. A scene's keys are what is distinctive to that scene: its place, the event, an object that matters in it. Never use the main characters' names as a scene's keys, since they are in nearly every scene. Cite the messages of the scene.
 - name: the full name, e.g. "Captain Ada Marsh" -> "Ada Marsh".
 - keys: the exact strings the story uses for this entity. Give distinct triggers: the name, nicknames and short forms, titles and role nouns the story actually uses for it ("the witch", "mistress", "apprentice"), never a pronoun. A longer form of a key you already give ("Morgana Veni" beside "Morgana") adds no trigger: leave it out. A key names the entity itself, never something of its ("the captain's cabin" is a place, not a key for the captain). Every key must appear verbatim in the transcript. Never use a word that also refers to another entity (for example a rank or title that two characters share): a key shared by two entities is dropped from both.
@@ -109,7 +109,7 @@ export const TOKENS_PER_ENTITY = 300;
 
 const ROOM = (room) => `Your reply has room for about ${room} ordinary entities; a main character's profile and a scene entry each take several. Depth is in addition to breadth, never instead of it: every entity the rules call for (every named character, place, object, event, group and thread) still gets an entry, besides the main characters' profiles and a scene entry for every scene. A long story has dozens of entities. List all the entities first, then the scenes. Don't leave out a qualifying entity or shorten a profile to save space.`;
 
-const ROOM_SCENES_RULE = 'Be strict about cuts, but list every one: a beat inside a scene (a reply, the next action, the same people carrying on) is not a cut, and a real skip in time, place or people always is, however short the scene it ends. How many scenes there are is whatever the story has. Check each cut again before you list it: if the people carry on from the message before, drop it.';
+const ROOM_SCENES_RULE = 'Be strict about cuts, but list every one: a beat inside a scene (a reply, the next action, a revelation, a change of mood, the same people carrying on where they are) is not a cut, and a real skip in time, place or people always is, however short the scene it ends. How many scenes there are is whatever the story has. Check each cut again before you list it: if it is not a later time, a different point of view, or the characters moving on to the next thing elsewhere, drop it.';
 
 const ROOM_BREADTH = (room) => `Your reply has room for about ${room} entities. A long story has dozens: go through the story from the first message to the last and list every named character, place, object, event, group and thread the rules call for, however small. Don't leave out a qualifying entity. List all the entities first, then the scenes. ${ROOM_SCENES_RULE}`;
 
@@ -249,17 +249,28 @@ export const SHAPE_DEPTH = `{
       "start": <the scene's start, as listed>,
       "title": "<the scene's title, as listed>",
       "keys": ["<2-4 words or phrases copied exactly from the scene's messages>"],
-      "facts": [ { "text": "<what happened, and why it matters>", "section": "what" | "why", "messages": [<ids>] } ],
-      "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
+      "parts": [
+        {
+          "title": "<a few words: what this part of the scene is>",
+          "facts": [ { "text": "<what happened in this part, in a sentence or two>", "section": "what", "messages": [<ids>] } ],
+          "quotes": [ { "text": "<words copied exactly from one message>", "speaker": "<who said it>", "message": <id of that message> } ]
+        }
+      ],
+      "facts": [ { "text": "<why the scene matters>", "section": "why", "messages": [<ids>] } ]
     }
   ]
 }`;
+
+/** A scene of up to this many messages is told in one part. */
+export const SHORT_SCENE = 12;
+/** The most parts a scene is told in. */
+export const MAX_PARTS = 4;
 
 const profileRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('  - a main character gets'), FIELD_GUIDE.indexOf('  - a character who recurs')).trim().replace(/^- a main character gets a full profile: /, '');
 const quotesRule = FIELD_GUIDE.slice(FIELD_GUIDE.indexOf('- quotes:'), FIELD_GUIDE.indexOf('- caseSensitive:'));
 
 const DEPTH_MAIN = `- a main character: first 2-4 quotes (a main character without quotes is unfinished), then a full profile, at least ${profileRule} The kept facts listed with the character are already in the entry: add what they don't cover, in the same sections, and don't restate them.\n`;
-const DEPTH_SCENE = `- a scene: what happened, in two to five facts (section "what": the events in order, with who did and said what; section "why": why it matters to the story, what it changes, sets up or reveals), each a full sentence or two with the concrete detail, citing messages inside the scene. Add what the kept fact doesn't cover. Give 1-3 quotes from the scene, the lines that capture it; every scene where anyone speaks has them. Give "keys" too: 2-4 words or phrases that are word for word in the scene's messages, distinctive to this scene (a place, an object, an event), and not among the <taken_keys> (another entry already uses those, and a key two entries share fires neither).\n`;
+const DEPTH_SCENE = `- a scene: its account, told in parts. A short scene (about ${SHORT_SCENE} messages or fewer) is one part; a longer one is 2 to ${MAX_PARTS} parts, each a stretch of the scene with its own turn (how it opens, what is found, what is decided), in story order; the listing says how many messages each scene has. Each part has a title of a few words, one or two facts (section "what") saying what happened in it in a sentence or two, lean, without the dialogue written into them, and 1-3 quotes from that stretch, the lines that carry it: the quotes are the detail, so give every part where anyone speaks its quotes. Besides the parts, one or two facts in section "why": why the scene matters to the story, what it changes, sets up or reveals. Cite messages inside the scene. Add what the kept fact doesn't cover. Give "keys" too: 2-4 words or phrases that are word for word in the scene's messages, distinctive to this scene (a place, an object, an event), and not among the <taken_keys> (another entry already uses those, and a key two entries share fires neither).\n`;
 const DEPTH_QUOTES = `${quotesRule}- A quote is one unbroken stretch of the message. When narration or "she said" cuts a speech in two, take the piece on one side of the cut; never join the pieces, change punctuation, or fill a gap with "...". Prefer a short line: one sentence of speech, copied from between its quotation marks, is the safest. Check each quote against the message once more before you give it.\n`;
 
 /** The guide for a batch of main characters, of scenes, or (both) of each. */
@@ -287,7 +298,8 @@ export function buildDepthPrompt(messages, { from, to, mains, scenes, spans, tak
         ...scenes.map((e) => {
             const [a, b] = spans.get(e.start);
             const meta = [e.when && `when: ${e.when}`, e.where && `where: ${e.where}`, e.who?.length && `who: ${e.who.join(', ')}`, e.line && `happened: ${e.line}`].filter(Boolean).join('; ');
-            return `- scene start ${e.start}, title "${title(e)}", span: messages ${a} to ${b}; ${meta}${e.facts.map((f) => `\n  kept${f.section ? ` (${f.section})` : ''}: ${f.text}`).join('')}`;
+            const n = b - a + 1;
+            return `- scene start ${e.start}, title "${title(e)}", span: messages ${a} to ${b} (${n} messages: ${n <= SHORT_SCENE ? 'one part' : `${Math.min(MAX_PARTS, Math.max(2, Math.round(n / SHORT_SCENE)))} parts or so`}); ${meta}${e.facts.map((f) => `\n  kept${f.section ? ` (${f.section})` : ''}: ${f.text}`).join('')}`;
         }),
     ].join('\n');
     return {

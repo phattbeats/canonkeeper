@@ -47,13 +47,26 @@ export function readReply(text, messageCount) {
                 text: f.text.trim(),
                 messages: [...new Set(f.messages.filter(validId))].sort((a, b) => a - b),
                 ...(isStr(f.section) ? { section: f.section.trim().toLowerCase() } : {}),
+                ...(isStr(f.part) ? { part: f.part.trim() } : {}),
             }))
             .filter((f) => f.messages.length); // a fact with no valid source is not a fact
     // Quotes are only shaped here; whether each is word for word in its message is compile's check.
     const quotes = (list) =>
         (Array.isArray(list) ? list : [])
             .filter((q) => isStr(q?.text) && Number.isInteger(q.message))
-            .map((q) => ({ text: q.text.trim(), message: q.message, ...(isStr(q.speaker) ? { speaker: q.speaker.trim() } : {}) }));
+            .map((q) => ({ text: q.text.trim(), message: q.message, ...(isStr(q.speaker) ? { speaker: q.speaker.trim() } : {}), ...(isStr(q.part) ? { part: q.part.trim() } : {}) }));
+    // A long scene's account comes in parts, each with its own facts and quotes;
+    // they are kept flat, each fact and quote labelled with its part.
+    const withParts = (s) => {
+        if (!Array.isArray(s.parts)) return s;
+        const tag = (list, title) => (Array.isArray(list) ? list : []).map((x) => (x && typeof x === 'object' && !isStr(x.part) ? { ...x, part: title } : x));
+        const parts = s.parts.filter((p) => p && typeof p === 'object' && isStr(p.title));
+        return {
+            ...s,
+            facts: [...(Array.isArray(s.facts) ? s.facts : []), ...parts.flatMap((p) => tag(p.facts, p.title.trim()))],
+            quotes: [...(Array.isArray(s.quotes) ? s.quotes : []), ...parts.flatMap((p) => tag(p.quotes, p.title.trim()))],
+        };
+    };
     const taken = new Set();
     data.entities.forEach((e, i) => {
         const label = isStr(e?.name) ? e.name.trim() : `entity #${i}`;
@@ -81,7 +94,8 @@ export function readReply(text, messageCount) {
 
     // A scene that comes with facts is also an entry of its own. One without
     // is only a boundary (the older shape).
-    data.scenes.forEach((s, i) => {
+    data.scenes.forEach((raw, i) => {
+        const s = raw && typeof raw === 'object' ? withParts(raw) : raw;
         if (!Array.isArray(s?.facts) || !isStr(s?.title)) return;
         const fs = facts(s.facts);
         if (!validId(s.start) || !fs.length) {

@@ -24,7 +24,7 @@ const messages = parseTranscript(readFileSync(join(STORY, 'transcript.jsonl'), '
 const recorded = JSON.parse(readFileSync(join(STORY, 'chunked', 'replies.json'), 'utf8'));
 const oneShot = JSON.parse(readFileSync(join(STORY, 'recorded', 'replies.json'), 'utf8'));
 // The window the recorded run used: the story needs ~7.7k prompt tokens in the story and ~14k with the instructions for deep entries.
-const SMALL = { contextTokens: 15200, outputShare: 0.5 };
+const SMALL = { contextTokens: 15400, outputShare: 0.5 };
 
 const titled = (book, name) => Object.values(book.entries).find((e) => e.comment === name);
 const reply = (entities, scenes = []) =>

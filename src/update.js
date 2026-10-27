@@ -32,7 +32,7 @@ function canonOf(ledger) {
         name: e.name,
         keys: [...e.keys],
         ...extrasOf(e),
-        facts: e.facts.map((f) => ({ text: f.text, messages: [...f.messages], ...(f.section ? { section: f.section } : {}) })),
+        facts: e.facts.map((f) => ({ text: f.text, messages: [...f.messages], ...(f.section ? { section: f.section } : {}), ...(f.part ? { part: f.part } : {}) })),
         ...(e.quotes?.length ? { quotes: structuredClone(e.quotes) } : {}),
         caseSensitive: e.caseSensitive,
         cascade: e.cascade,
@@ -153,7 +153,7 @@ function merge(canon, found, previous, fresh, review, renamed) {
             const before = restatedFrom(name, fact.text);
             if (before) {
                 restatedNow.add(tag(name, fact.text));
-                facts.push({ text: fact.text, messages: [...new Set([...fact.messages, ...before])].sort((x, y) => x - y), ...(fact.section ? { section: fact.section } : {}) });
+                facts.push({ text: fact.text, messages: [...new Set([...fact.messages, ...before])].sort((x, y) => x - y), ...(fact.section ? { section: fact.section } : {}), ...(fact.part ? { part: fact.part } : {}) });
             }
             else if (fact.messages.some((id) => fresh.has(id))) facts.push(fact);
             else if (stand-- > 0) facts.push(fact);

@@ -62,6 +62,6 @@ export function addFacts(e, facts) {
     for (const fact of facts) {
         const same = e.facts.find((x) => fold(x.text) === fold(fact.text));
         if (same) same.messages = [...new Set([...same.messages, ...fact.messages])].sort((a, b) => a - b);
-        else e.facts.push({ text: fact.text, messages: [...fact.messages], ...(fact.section ? { section: fact.section } : {}) });
+        else e.facts.push({ text: fact.text, messages: [...fact.messages], ...(fact.section ? { section: fact.section } : {}), ...(fact.part ? { part: fact.part } : {}) });
     }
 }

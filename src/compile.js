@@ -338,6 +338,7 @@ const quoteLine = (q) => `"${q.text}"${q.speaker ? ` (${q.speaker})` : ''}`;
 export function renderContent(e) {
     const facts = e.facts ?? [];
     const quotes = e.quotes ?? [];
+    if (e.kind === 'scene' && (facts.some((f) => f.part) || quotes.some((q) => q.part))) return renderScene(e);
     const sectioned = facts.some((f) => f.section);
     const head = e.kind === 'scene'
         ? [[e.when && `When: ${e.when}.`, e.where && `Where: ${e.where}.`, e.who?.length && `Who: ${e.who.join(', ')}.`].filter(Boolean).join(' ')].filter(Boolean)
@@ -362,6 +363,42 @@ export function renderContent(e) {
         if (text || q) lines.push(`${title}: ${text}${q ? `${text ? ' ' : ''}Said: ${q}` : ''}`.trim());
     }
     if (quotes.length && !lines.some((l) => l.includes('Said: '))) lines.push(`Said: ${quotes.map(quoteLine).join(' ')}`);
+    return lines.join('\n');
+}
+
+/**
+ * The parts of a scene in story order: the part labels its facts and quotes
+ * carry, each placed by the first message it cites. Facts and quotes with no
+ * part come first, as the scene's own.
+ */
+export function sceneParts(e) {
+    const facts = e.facts ?? [];
+    const quotes = e.quotes ?? [];
+    const first = new Map();
+    const place = (label, id) => { if (label && (!first.has(label) || id < first.get(label))) first.set(label, id); };
+    for (const f of facts) if (f.section !== 'why') place(f.part, Math.min(...f.messages));
+    for (const q of quotes) place(q.part, q.message);
+    const labels = [...first.keys()].sort((a, b) => first.get(a) - first.get(b));
+    return labels.map((title) => ({ title, facts: facts.filter((f) => f.part === title && f.section !== 'why'), quotes: quotes.filter((q) => q.part === title) }));
+}
+
+/**
+ * A scene told in parts: the header, what the scene as a whole establishes,
+ * then each part with its own lines, then why it matters.
+ */
+function renderScene(e) {
+    const facts = e.facts ?? [];
+    const quotes = e.quotes ?? [];
+    const lines = [[e.when && `When: ${e.when}.`, e.where && `Where: ${e.where}.`, e.who?.length && `Who: ${e.who.join(', ')}.`].filter(Boolean).join(' ')].filter(Boolean);
+    const own = facts.filter((f) => !f.part && f.section !== 'why');
+    const ownSaid = quotes.filter((q) => !q.part);
+    if (own.length || ownSaid.length) lines.push(`${own.map((f) => f.text).join(' ')}${ownSaid.length ? `${own.length ? ' ' : ''}Said: ${ownSaid.map(quoteLine).join(' ')}` : ''}`.trim());
+    for (const p of sceneParts(e)) {
+        const text = p.facts.map((f) => f.text).join(' ');
+        lines.push(`${p.title}: ${text}${p.quotes.length ? `${text ? ' ' : ''}Said: ${p.quotes.map(quoteLine).join(' ')}` : ''}`.trim());
+    }
+    const why = facts.filter((f) => f.section === 'why').map((f) => f.text).join(' ');
+    if (why) lines.push(`${SECTION_TITLE.why}: ${why}`);
     return lines.join('\n');
 }
 
@@ -395,7 +432,7 @@ export function toEntry(uid, c) {
             pinned: false,
             ...(c.kind ? { kind: c.kind } : {}),
             ...(c.kind === 'scene' ? { start: c.start } : {}),
-            facts: c.facts.map((f) => ({ text: f.text, sources: toRanges(f.messages), ...(f.section ? { section: f.section } : {}) })),
+            facts: c.facts.map((f) => ({ text: f.text, sources: toRanges(f.messages), ...(f.section ? { section: f.section } : {}), ...(f.part ? { part: f.part } : {}) })),
             ...(c.quotes?.length ? { quotes: c.quotes } : {}),
             ...(c.anchor == null ? {} : { anchor: c.anchor }),
         },
@@ -408,7 +445,10 @@ export function toEntry(uid, c) {
  * always knows where the story has been.
  */
 export function toTimeline(uid, scenes) {
-    const lines = scenes.map((s, i) => `${i + 1}. ${s.name.replace(/^Scene: /, '')}${s.when ? ` (${s.when})` : ''}: ${s.line ?? s.facts[0].text}`);
+    const lines = scenes.map((s, i) => {
+        const parts = sceneParts(s).map((p) => `   - ${p.title}`);
+        return [`${i + 1}. ${s.name.replace(/^Scene: /, '')}${s.when ? ` (${s.when})` : ''}: ${s.line ?? s.facts[0].text}`, ...parts].join('\n');
+    });
     const cited = scenes.flatMap((s) => s.facts.flatMap((f) => f.messages));
     return {
         ...toEntry(uid, { name: 'Timeline', keys: [], facts: [], caseSensitive: false, cascade: false, throttle: 0, sources: toRanges(cited) }),

@@ -54,7 +54,7 @@ export function checkQuotes(quotes, messages) {
             if (!text) removed.push({ quote: q.text, why: `not word for word in message ${q.message}` });
             else if (!seen.has(plain(text))) {
                 seen.add(plain(text));
-                kept.push({ text, message: q.message, ...(q.speaker ? { speaker: q.speaker } : {}) });
+                kept.push({ text, message: q.message, ...(q.speaker ? { speaker: q.speaker } : {}), ...(q.part ? { part: q.part } : {}) });
             }
         }
     }
